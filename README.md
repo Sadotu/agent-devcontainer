@@ -1,9 +1,6 @@
 # agent-devcontainer-template
 
-Template for the secure Claude Code / Codex devcontainer used across
-`issue-orchestrator`, `usage-sentinel`, and future projects. Not an app
-itself — clone this to bootstrap a new project's `.devcontainer/`, skills,
-and instruction files.
+Template for the secure Claude Code / Codex devcontainer used across many projects. Not an app i tself — clone this to bootstrap a new project's `.devcontainer/`, skills, and instruction files.
 
 ## Using this template
 
