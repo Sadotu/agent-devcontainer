@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# CLI-first devcontainer helper — no VS Code required.
+# Wraps @devcontainers/cli against this workspace.
+#
+#   ./.devcontainer/dc up        build + start the container (runs postCreate)
+#   ./.devcontainer/dc shell     open an interactive bash shell inside
+#   ./.devcontainer/dc exec ...   run a one-off command inside
+#   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
+#   ./.devcontainer/dc down      stop + remove the container (volumes kept)
+#   ./.devcontainer/dc nuke      stop + remove the container (volumes kept)
+#   ./.devcontainer/dc wipe-volumes --yes
+#                                  delete persisted agent config/auth volumes
+#
+# Requires: docker daemon reachable, and `devcontainer` CLI
+#   (npm i -g @devcontainers/cli).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONTAINER_LABEL="devcontainer.local_folder=$ROOT"
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: '$1' not found. $2" >&2
+    exit 1
+  }
+}
+
+require docker "Install Docker Desktop and enable WSL integration for this distro."
+docker ps >/dev/null 2>&1 || {
+  echo "ERROR: docker daemon not reachable." >&2
+  echo "Enable Docker Desktop → Settings → Resources → WSL Integration for this distro." >&2
+  exit 1
+}
+require devcontainer "Install with: npm i -g @devcontainers/cli"
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  up)
+    devcontainer up --workspace-folder "$ROOT"
+    ;;
+  rebuild)
+    devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    ;;
+  shell)
+    devcontainer exec --workspace-folder "$ROOT" bash
+    ;;
+  exec)
+    devcontainer exec --workspace-folder "$ROOT" "$@"
+    ;;
+  down)
+    docker ps -aq --filter "label=$CONTAINER_LABEL" | xargs -r docker rm -f
+    echo "Container removed. Agent config/auth volumes preserved."
+    ;;
+  nuke)
+    docker ps -aq --filter "label=$CONTAINER_LABEL" | xargs -r docker rm -f
+    echo "Container removed. Agent config/auth volumes preserved."
+    ;;
+  wipe-volumes)
+    if [ "${1:-}" != "--yes" ]; then
+      echo "ERROR: wipe-volumes deletes persisted Claude, Codex, GitHub, and shell-history volumes." >&2
+      echo "Re-run as: ./.devcontainer/dc wipe-volumes --yes" >&2
+      exit 1
+    fi
+    docker ps -aq --filter "label=$CONTAINER_LABEL" | xargs -r docker rm -f
+    docker volume rm -f \
+      __PROJECT_NAME__-claude-config __PROJECT_NAME__-codex-config \
+      __PROJECT_NAME__-gh-config __PROJECT_NAME__-github-app-config \
+      __PROJECT_NAME__-shell-history
+    echo "Container and persisted agent config/auth volumes deleted. Re-auth required next 'up'."
+    ;;
+  *)
+    grep -E '^#( |$)' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+    exit 1
+    ;;
+esac

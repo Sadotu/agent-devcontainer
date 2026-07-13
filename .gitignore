@@ -1,0 +1,18 @@
+# Secrets and agent credentials must never be committed.
+.env
+.env.*
+*.token
+*.pem
+*.key
+*credentials*
+secrets/
+
+# Agent config/auth dirs (live in container volumes, but never commit copies)
+.claude/
+.codex/
+.gemini/
+.config/
+
+# Local noise
+*.log
+node_modules/

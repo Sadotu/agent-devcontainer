@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Local safety net for pushes:
+#   1. Refuse direct pushes to protected branches (hard block).
+#   2. Warn when a feature branch has a STALE BASE — its merge-base with
+#      origin/main lags far behind, which balloons the PR diff with unrelated
+#      files (GitHub diffs against the merge-base). Warning only; the
+#      github-issue skill enforces the hard gate before opening a PR.
+# Real enforcement is branch protection on the Git server — this hook only
+# stops accidents by agents or humans inside the container.
+# Deliberate override: git push --no-verify
+set -u
+
+protected='^refs/heads/(main|master|develop)$'
+stale_threshold=50
+blocked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" =~ $protected ]]; then
+    echo "BLOCKED: direct push to '$remote_ref' is not allowed from this workspace." >&2
+    echo "Create a feature branch and open a pull request instead." >&2
+    echo "(Deliberate override: git push --no-verify)" >&2
+    blocked=1
+    continue
+  fi
+
+  # Skip branch deletions (local_sha is all zeros).
+  [[ "$local_sha" =~ ^0+$ ]] && continue
+
+  # Stale-base warning (best effort; needs a local origin/main ref).
+  if git rev-parse --verify --quiet origin/main >/dev/null; then
+    base="$(git merge-base origin/main "$local_sha" 2>/dev/null || true)"
+    if [ -n "$base" ]; then
+      behind="$(git rev-list --count "$base"..origin/main 2>/dev/null || echo 0)"
+      if [ "${behind:-0}" -gt "$stale_threshold" ]; then
+        echo "WARNING: '$local_ref' has a STALE BASE — its merge-base is $behind commits behind origin/main." >&2
+        echo "         The resulting PR will show far more files than you changed, and may revert merged work." >&2
+        echo "         Fix: git fetch origin && git rebase origin/main   (then re-verify the diff)." >&2
+      fi
+    fi
+  fi
+done
+
+exit "$blocked"
