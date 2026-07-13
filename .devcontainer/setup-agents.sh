@@ -43,7 +43,7 @@ if ! grep -q "# --- __PROJECT_NAME__ agent aliases ---" "$BASHRC"; then
 # The devcontainer itself is already the sandbox boundary (workspace-only
 # bind mount, no host creds, no docker socket), so Codex's inner sandbox is
 # redundant anyway. Approval gate (on-request) still stands.
-alias ccode='claude'
+alias ccode='claude --permission-mode auto'
 alias cx='codex --sandbox danger-full-access --ask-for-approval on-request'
 alias cx-auto='codex --sandbox danger-full-access --ask-for-approval never'
 EOF

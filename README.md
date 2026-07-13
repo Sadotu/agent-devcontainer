@@ -163,7 +163,7 @@ Aliases (installed by `setup-agents.sh`):
 
 | Alias | Expands to | Mode |
 |-------|-----------|------|
-| `ccode` | `claude` | Claude Code, normal approvals |
+| `ccode` | `claude --permission-mode auto` | Claude Code, auto mode |
 | `cx` | `codex --sandbox danger-full-access --ask-for-approval on-request` | Codex, asks when needed |
 | `cx-auto` | `codex --sandbox danger-full-access --ask-for-approval never` | Codex, no prompts |
 
