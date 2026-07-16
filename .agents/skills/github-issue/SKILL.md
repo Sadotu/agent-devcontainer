@@ -1,13 +1,13 @@
 ---
 name: github-issue
-description: Use when working a GitHub issue in this repo — runs the whole flow end to end: select the issue, derive the design and plan straight from the issue description, implement in an isolated worktree via subagents, verify against the issue, and open a PR that carries the generated spec + plan and closes the issue.
+description: Use when working a GitHub issue in this repo — runs the whole flow end to end: select the issue, open a draft PR immediately, self-resolve design decisions and log them to the PR, implement in an isolated worktree via subagents, verify against the issue, and mark the PR ready to close the issue.
 ---
 
 # GitHub Issue — End to End
 
 A single continuous workflow. Run all phases in order in one session; there is no plan/build handoff.
 
-**The issue description is the leading input.** It seeds the design work and is the specification you verify the result against. A design and an implementation plan are still produced and committed so they travel with the PR — but they are a record for the PR, not something the user needs to circle back and read. The user's input happens live in the design phase (below); once that design is approved, the written spec and plan are just artifacts.
+**The issue description is the leading input.** It seeds the design work and is the specification you verify the result against. A design and an implementation plan are still produced and committed so they travel with the PR — but they are a record for the PR, not something the user needs to circle back and read. **The PR opens as a draft immediately, right after the branch exists — before any design work.** Design questions are auto-resolved by you, not asked live; every question, the answer you chose, and why is logged into the PR body so the user reviews the whole design conversation asynchronously, at the end.
 
 This skill is repo-agnostic: it always operates on the repo it's invoked from. Resolve that repo dynamically — never hardcode an owner/repo:
 
@@ -69,11 +69,49 @@ If branch, cleanliness, or ancestry guard fails, stop. Preserve user work; do no
 
 Use a short kebab-case slug of three to five words. From this point onward, run all file writes, commits, tests, and Git commands in `<worktree-path>` unless a command explicitly inspects the primary worktree. Never commit issue work directly to `main`.
 
+**Open the PR now, as a draft — before any design work.** A PR needs a branch with at least one commit ahead of `origin/main`, so seed one, push, and open immediately:
+
+```bash
+cd <worktree-path>
+git commit --allow-empty -m "Start work on #<number>"
+git push -u origin agent/<number>-<slug>
+GH_TOKEN="$(GITHUB_APP_REPO=$REPO $WORKSPACE/.devcontainer/gh-app-token.sh)" \
+  gh pr create --repo "$REPO" --draft \
+    --title "<title referencing issue #<number>>" \
+    --body "$(cat <<'EOF'
+Closes #<number>
+
+## Design Decisions
+_In progress — filled in once design work completes._
+EOF
+)"
+```
+
+Report the PR URL to the user right away — this is the first thing they see, before any design question is even generated. The PR stays **draft** until Phase 6 marks it ready.
+
 ---
 
 ## Phase 3 — Design and Plan (inside issue worktree)
 
-**REQUIRED SUB-SKILL:** Use `superpowers:brainstorming`, seeded with the issue description and your codebase findings. Follow its approval gates — this is where the user's input on the design happens. After the design is approved, use `superpowers:writing-plans` to produce the plan.
+**REQUIRED SUB-SKILL:** Use `superpowers:brainstorming`, seeded with the issue description and your codebase findings, for its structure only (explore context → clarifying questions → propose approaches → present design → write spec → self-review).
+
+**Override for this workflow — do not pause at any of `superpowers:brainstorming`'s gates.** That skill normally stops and waits for the user at each step: clarifying questions, the approach choice, per-section design approval, the spec review gate. Here, none of that waits. For every question you would have asked, generate it as usual, then answer it yourself — pick the recommended or best option — and continue immediately. Record each one as you go: the question, the options considered, the answer you chose, and why.
+
+Once the design doc and plan are written and committed, replace the "In progress" placeholder in the PR body with the full log:
+
+```bash
+GH_TOKEN="$(GITHUB_APP_REPO=$REPO $WORKSPACE/.devcontainer/gh-app-token.sh)" \
+  gh pr edit <pr-number> --repo "$REPO" --body "$(cat <<'EOF'
+Closes #<number>
+
+## Design Decisions
+- **Q:** <question> — **A:** <answer chosen> — **Why:** <reasoning>
+- ...
+EOF
+)"
+```
+
+This is the user's review surface for the design conversation — they read it in the PR instead of being asked live. After the design is settled, use `superpowers:writing-plans` to produce the plan.
 
 Produce and **commit** two artifacts inside `<worktree-path>` so they land in the PR diff:
 
@@ -127,14 +165,14 @@ behind=$(git rev-list --count "$base"..origin/main)
 [ "$behind" -gt 50 ] && echo "STALE BASE: $behind commits behind origin/main — rebase before PR"
 ```
 
-If stale, `git rebase origin/main` (resolve conflicts, drop already-merged commits), then re-run Phase 5. Confirm `git diff --stat origin/main...HEAD` shows only your intended files before opening the PR.
+If stale, `git rebase origin/main` (resolve conflicts, drop already-merged commits), then re-run Phase 5. Confirm `git diff --stat origin/main...HEAD` shows only your intended files before finalizing the PR.
 
-When creating the PR:
+**The PR already exists (opened in Phase 2) — finalize it, don't create a new one:**
 
-- Title clearly references the issue.
-- Body summarizes the behavior change and the verification performed, **and links the committed spec + plan paths** (`docs/superpowers/specs/…`, `docs/superpowers/plans/…`) so reviewers can find them.
-- Include exactly one closing reference: `Closes #<number>`.
-- Push the issue branch and create the PR only after verification passes. Report the branch name and PR URL.
+- Push the final commits to the existing branch.
+- Update the PR body to append a verification summary below the Design Decisions log — what was checked, against which acceptance criteria — and links to the committed spec + plan paths (`docs/superpowers/specs/…`, `docs/superpowers/plans/…`). Keep the existing single `Closes #<number>` line intact; don't duplicate it.
+- Mark it ready for review: `gh pr ready <pr-number> --repo "$REPO"`.
+- Report the branch name and PR URL.
 
 Do not merge unless the user explicitly requests it.
 
@@ -205,7 +243,8 @@ Never use forced worktree removal, `git branch -D`, reset, clean, or force-push 
 
 ## Non-Negotiable Rules
 
-- The issue description is the leading input and the spec you verify against; the design is settled interactively via `superpowers:brainstorming`, then recorded.
+- The issue description is the leading input and the spec you verify against. The PR opens as a **draft immediately** after the branch exists, before any design work — it is not held back for a finished result.
+- Design questions in Phase 3 are auto-resolved by you, not asked live; log every question, the answer chosen, and why into the PR body so the user reviews the design conversation at the end, asynchronously.
 - Still generate **and commit** the spec + plan so they ride in the PR (the user need not re-read them).
 - Before any issue artifact is written, safely fast-forward clean local `main`, then branch from freshly fetched `origin/main`; never branch from local `main` or another feature branch.
 - If local `main` diverged or the primary worktree is dirty/not on `main`, stop without mutating it.
@@ -214,4 +253,5 @@ Never use forced worktree removal, `git branch -D`, reset, clean, or force-push 
 - Do not implement in the user's dirty primary worktree; do not commit directly to `main`.
 - Do not bypass failing tests or omit verification details.
 - Ensure the PR body has exactly one correct closing reference.
+- Never leave the PR in draft state past a successful Phase 6 — mark it ready once verification passes.
 - After confirmed merge, complete Phase 7: remove the clean issue worktree, delete local and remote `agent/*` branches, fast-forward local `main`, and confirm the tracker issue closed.
