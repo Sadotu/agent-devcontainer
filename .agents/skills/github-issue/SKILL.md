@@ -135,9 +135,71 @@ When creating the PR:
 - Body summarizes the behavior change and the verification performed, **and links the committed spec + plan paths** (`docs/superpowers/specs/…`, `docs/superpowers/plans/…`) so reviewers can find them.
 - Include exactly one closing reference: `Closes #<number>`.
 - Push the issue branch and create the PR only after verification passes. Report the branch name and PR URL.
-- After merge, confirm the issue closed with `gh issue view`; close it by hand with `gh issue close` if it did not.
 
 Do not merge unless the user explicitly requests it.
+
+---
+
+## Phase 7 — Post-Merge Cleanup
+
+Run this phase when the user reports the PR merged or authenticated GitHub state reports `MERGED`. Never treat a merely closed PR as merged.
+
+Resolve the merged branch from the PR, then enforce the `agent/*` boundary:
+
+```bash
+PR_JSON="$(GH_TOKEN="$(GITHUB_APP_REPO=$REPO $WORKSPACE/.devcontainer/gh-app-token.sh)" \
+  gh pr view <pr-number> --repo "$REPO" --json state,headRefName)"
+test "$(printf '%s' "$PR_JSON" | jq -r .state)" = MERGED
+BRANCH="$(printf '%s' "$PR_JSON" | jq -r .headRefName)"
+case "$BRANCH" in agent/*) ;; *) echo "Refusing to delete non-agent branch: $BRANCH"; exit 1 ;; esac
+```
+
+Fetch and prove the branch tip landed in `origin/main`. Find its registered worktree and require it to be clean, including untracked files:
+
+```bash
+git -C "$WORKSPACE" fetch origin
+git -C "$WORKSPACE" merge-base --is-ancestor "$BRANCH" origin/main
+ISSUE_WORKTREE="$(git -C "$WORKSPACE" worktree list --porcelain | awk -v ref="refs/heads/$BRANCH" '
+  /^worktree / { wt=substr($0, 10) }
+  $0 == "branch " ref { print wt }
+')"
+test -n "$ISSUE_WORKTREE"
+test -z "$(git -C "$ISSUE_WORKTREE" status --porcelain)"
+```
+
+Stop and report the failed guard without cleanup if any command above fails. Once all guards pass, remove the worktree from the primary repo, prune its metadata, delete the local branch safely, and delete the matching remote branch when it still exists:
+
+```bash
+cd "$WORKSPACE"
+git worktree remove "$ISSUE_WORKTREE"
+git worktree prune
+git branch -d "$BRANCH"
+if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+  git push origin --delete "$BRANCH"
+fi
+```
+
+Fast-forward local `main` without resetting or cleaning user files:
+
+```bash
+test "$(git branch --show-current)" = main
+git merge-base --is-ancestor main origin/main
+git merge --ff-only origin/main
+test "$(git rev-parse main)" = "$(git rev-parse origin/main)"
+```
+
+Finally, confirm the issue closed; close it manually if GitHub did not process the PR closing reference:
+
+```bash
+ISSUE_STATE="$(GH_TOKEN="$(GITHUB_APP_REPO=$REPO $WORKSPACE/.devcontainer/gh-app-token.sh)" \
+  gh issue view <number> --repo "$REPO" --json state -q .state)"
+if [ "$ISSUE_STATE" != CLOSED ]; then
+  GH_TOKEN="$(GITHUB_APP_REPO=$REPO $WORKSPACE/.devcontainer/gh-app-token.sh)" \
+    gh issue close <number> --repo "$REPO"
+fi
+```
+
+Never use forced worktree removal, `git branch -D`, reset, clean, or force-push during post-merge cleanup. Never delete `main`, `master`, `develop`, `release/*`, or `hotfix/*` locally or remotely.
 
 ---
 
@@ -152,4 +214,4 @@ Do not merge unless the user explicitly requests it.
 - Do not implement in the user's dirty primary worktree; do not commit directly to `main`.
 - Do not bypass failing tests or omit verification details.
 - Ensure the PR body has exactly one correct closing reference.
-- Confirm the tracker issue actually closed after merge; close manually if it didn't.
+- After confirmed merge, complete Phase 7: remove the clean issue worktree, delete local and remote `agent/*` branches, fast-forward local `main`, and confirm the tracker issue closed.
