@@ -7,7 +7,10 @@ WORKSPACE="/workspaces/__PROJECT_NAME__"
 BASHRC="$HOME/.bashrc"
 
 echo "==> Fixing ownership of persisted config volumes"
-# Named volumes are created root-owned on first use; hand them to the dev user.
+# Named volumes are seeded vscode-owned by the Dockerfile (Docker copies the
+# image path's ownership into a fresh volume on first mount). runArgs sets
+# --security-opt no-new-privileges, which disables sudo entirely at runtime —
+# so this can only ever be a no-op safety net, never an actual fix.
 sudo chown "$(id -u):$(id -g)" "$HOME/.config" 2>/dev/null || true
 sudo chown -R "$(id -u):$(id -g)" \
   "$HOME/.claude" "$HOME/.codex" \

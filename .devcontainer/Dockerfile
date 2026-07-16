@@ -54,6 +54,6 @@ RUN npm install -g \
 # sudo can't fix it later, because runArgs sets --security-opt
 # no-new-privileges, which disables sudo entirely.
 RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
-        /home/vscode/.config/gh /home/vscode/.history \
+        /home/vscode/.config/gh /home/vscode/.config/github-app /home/vscode/.history \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex \
         /home/vscode/.config /home/vscode/.history

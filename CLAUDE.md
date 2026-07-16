@@ -30,6 +30,12 @@ When running **inside the container** (workspace mounted at
   devcontainer's workspace-only bind mount is already the sandbox boundary,
   so Codex's inner bwrap sandbox is redundant. See `.devcontainer/setup-agents.sh`
   `cx`/`cx-auto` aliases.
+- `__PROJECT_NAME__-github-app-config` volume mounts root-owned on first use,
+  same as the other named volumes — but was missing from the `chown -R` list
+  in `setup-agents.sh`, so `vscode` couldn't write `app-id`/`private-key.pem`
+  into it. `sudo` is blocked by `no-new-privileges`, so there's no in-container
+  workaround. Fixed by adding `$HOME/.config/github-app` to the chown list
+  (setup-agents.sh line ~12).
 
 ### GitHub App auth
 
