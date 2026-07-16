@@ -16,3 +16,7 @@ secrets/
 # Local noise
 *.log
 node_modules/
+
+# Cloned project repos live here; keep dir, ignore contents
+repo/*
+!repo/.gitkeep
