@@ -49,15 +49,27 @@ When running **inside the container** (workspace mounted at
   an explicit `|| true` on the whole thing, not just on the final
   assignment — see the `BW_SESSION` extraction in `setup-agents.sh` for two
   bugs of this exact shape hit back to back.
-- `bw login --raw` does **not** suppress the interactive success banner
-  the way `bw unlock --raw` does — contradicts what the flag name implies,
-  and isn't obvious from the docs. `bw login`'s banner still prints in
-  full ("You are logged in!\n\nTo unlock your vault, set your session
-  key..."), so capture and parse the session key out of that text instead
-  of trusting `--raw`'s output shape for `login`. Also strip ANSI escape
-  codes before parsing — `bw` can still emit color codes even when piped
-  (invisible in a real terminal, present in the raw captured bytes) unless
-  `NO_COLOR=1 FORCE_COLOR=0` is set.
+- A plain `bw login` (no `--raw`) already unlocks the vault and prints the
+  session key inside its success banner ("You are logged in!\n\n...export
+  BW_SESSION=\"...\"") — chaining a separate `bw unlock` after it just adds
+  a second, easy-to-miss master-password prompt. `setup-agents.sh` parses
+  the key out of the banner text, which works regardless of `--raw`'s exact
+  behavior. (Whether `login --raw` suppresses the banner the way
+  `unlock --raw` does was never actually verified — an earlier note here
+  claimed it was "confirmed against a real run", but every observed failure
+  turned out to be running a stale pre-fix image, so that claim had no
+  evidence behind it.) The parser also strips ANSI escape codes and sets
+  `NO_COLOR=1 FORCE_COLOR=0` as precautionary hardening — also not an
+  observed failure mode, just cheap insurance.
+- **A floating image tag (`:latest`) goes stale silently.** `devcontainer
+  up` — even with `--remove-existing-container --build-no-cache` — never
+  passes `--pull`, so it reuses whatever digest the local Docker cache has
+  for the tag. Three rounds of published fixes never reached the machine
+  that was testing them; every "still broken" report was the original
+  image re-running. `dc up`/`dc rebuild` now `docker pull` the image named
+  in `devcontainer.json` first. When debugging "my fix didn't work",
+  compare the `FROM ...@sha256:` digest in the rebuild log against the
+  latest published digest before assuming the fix is wrong.
 - `dotagents` (skill distribution, see `.devcontainer/agents.toml`) only
   resolves a bare `name` + `source = "owner/repo"` entry against a
   `skills/<name>/` subdirectory in the source repo — a skill directory

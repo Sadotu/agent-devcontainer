@@ -43,11 +43,29 @@ require devcontainer "Install with: npm i -g @devcontainers/cli"
 cmd="${1:-}"
 shift || true
 
+# Re-pull the referenced image before creating the container. Without this,
+# a floating tag like :latest silently reuses whatever digest is in the
+# local Docker cache — `devcontainer up`, even with --build-no-cache, never
+# passes --pull, so published image updates (setup-agents.sh fixes, CLI
+# bumps) would not reach this machine. No-op for a `build`-based
+# devcontainer.json (no "image" key) and non-fatal offline.
+pull_image() {
+  local image
+  image="$(sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$ROOT/.devcontainer/devcontainer.json" | head -1)"
+  if [ -n "$image" ]; then
+    echo "Pulling $image ..."
+    docker pull "$image" || echo "WARNING: pull failed — using local copy if present."
+  fi
+}
+
 case "$cmd" in
   up)
+    pull_image
     devcontainer up --workspace-folder "$ROOT"
     ;;
   rebuild)
+    pull_image
     devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
     ;;
   shell)
