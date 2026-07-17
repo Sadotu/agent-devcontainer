@@ -4,3 +4,7 @@ agents = ["claude", "codex"]
 [[skills]]
 name = "github-issue"
 source = "Sadotu/agent-skills"
+
+[[skills]]
+name = "setup"
+source = "Sadotu/agent-skills"
