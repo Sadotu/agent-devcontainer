@@ -1,0 +1,26 @@
+{
+  "name": "__PROJECT_NAME__-agents",
+  "image": "ghcr.io/sadotu/agent-devcontainer:latest",
+  "workspaceFolder": "/workspaces/__PROJECT_NAME__",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/__PROJECT_NAME__,type=bind,consistency=cached",
+  "mounts": [
+    "source=__PROJECT_NAME__-claude-config,target=/home/vscode/.claude,type=volume",
+    "source=__PROJECT_NAME__-codex-config,target=/home/vscode/.codex,type=volume",
+    "source=__PROJECT_NAME__-gh-config,target=/home/vscode/.config/gh,type=volume",
+    "source=__PROJECT_NAME__-github-app-config,target=/home/vscode/.config/github-app,type=volume",
+    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
+  ],
+  "remoteUser": "vscode",
+  "runArgs": ["--init", "--security-opt", "no-new-privileges"],
+  "containerEnv": {
+    "HISTFILE": "/home/vscode/.history/.bash_history",
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "PROJECT_NAME": "__PROJECT_NAME__",
+    "GH_OWNER": "__GH_OWNER__",
+    "APP_ID": "__APP_ID__"
+  },
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "customizations": {
+    "vscode": { "extensions": ["anthropic.claude-code", "dbaeumer.vscode-eslint"] }
+  }
+}

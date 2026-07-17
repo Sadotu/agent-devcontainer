@@ -37,9 +37,27 @@ When running **inside the container** (workspace mounted at
   workaround. Fixed by adding `$HOME/.config/github-app` to the chown list
   (setup-agents.sh line ~12).
 - `dc` is host-side (invokes `devcontainer up` to *create* the container in
-  the first place) — it cannot be baked into the shared image like the
-  other `.devcontainer/` scripts, chicken-and-egg. It stays a small
-  per-project file, same tier as `devcontainer.json`.
+  the first place), so at *runtime* it can't be one of the image-baked
+  `.devcontainer/` scripts — it has to already exist in the project repo
+  before any image is pulled. It's still a per-project file, same tier as
+  `devcontainer.json`. It IS, however, baked into the image as a *template*
+  (`/opt/agent-devcontainer/templates/dc`) that the `init` scaffolder emits
+  into a new project — that makes the image the single source of truth and
+  kills the old "copy `dc` verbatim" drift, without changing that `dc` runs
+  host-side. `dc` is project-agnostic (derives PROJECT_NAME from the repo
+  dir name), so the baked template is byte-identical to what every project
+  gets.
+- The `init` scaffolder (`/usr/local/bin/init`, run via `docker run --rm -it
+  -v "$PWD":/out ghcr.io/sadotu/agent-devcontainer init`) is a normal script
+  on PATH, deliberately NOT an `ENTRYPOINT`. The devcontainer lifecycle
+  (`devcontainer up` sets its own container command) is the source of most
+  past pain here (stale images, ownership, sudo) — an entrypoint dispatcher
+  would have put init logic in that critical path for no benefit. `docker
+  run IMAGE init` resolves `init` via PATH instead, leaving container start
+  completely untouched. It also can't produce the project files from
+  *inside* the devcontainer lifecycle (postCreate runs too late — the files
+  it would write are the ones needed to start the container), which is why
+  it's a separate `docker run`, not a postCreate step.
 - `set -eo pipefail` + a pipeline ending in `grep` that legitimately finds
   no match (e.g. parsing a session key out of CLI output when auth failed)
   kills the whole script immediately via `set -e` — silently, no error

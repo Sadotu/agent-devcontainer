@@ -65,10 +65,6 @@ RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
 # Devcontainer tooling shared by every project — postCreateCommand in each
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
-# NOTE: `dc` is NOT baked in here — it's a host-side wrapper that invokes
-# `devcontainer up` to *create* the container in the first place, so it has
-# to exist in the project repo before any image is ever pulled. It stays a
-# small per-project file (see devcontainer.json below).
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
         /opt/agent-devcontainer/
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
@@ -77,3 +73,17 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/githooks/pre-push
+
+# Project scaffolder + the two per-project files it emits.
+# `dc` and devcontainer.json must exist in a project BEFORE any container can
+# be created, so they can't be produced by the devcontainer lifecycle. Instead
+# `init` (run via a plain `docker run ... init`, outside that lifecycle) writes
+# them into a bind-mounted project. Baking `dc` here as the canonical template
+# also makes it the single source of truth — no more copying it verbatim.
+# `init` is a normal script on PATH, NOT an ENTRYPOINT, so the container-start
+# path stays completely untouched.
+COPY dc /opt/agent-devcontainer/templates/dc
+COPY devcontainer.json.template /opt/agent-devcontainer/templates/devcontainer.json.template
+COPY init.sh /usr/local/bin/init
+RUN chmod 0755 /usr/local/bin/init \
+        && chmod 0755 /opt/agent-devcontainer/templates/dc
