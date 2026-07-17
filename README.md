@@ -146,7 +146,7 @@ and stored in container volumes — never commit them.
 |------|---------|-------|
 | GitHub (git + `gh`) | Bitwarden: unlock once at first start (key fetched automatically). Manual: drop the App key into `~/.config/github-app/` once | Automatic thereafter — see [Repository access](#repository-access-github-app) |
 | Claude Code | `claude` | Browser OAuth login fails in this container — see below |
-| Codex CLI | `codex` | First run prompts for ChatGPT login or API key |
+| Codex CLI | Bitwarden `codex-auth-token` item Notes (auto), or `codex login --device-auth` (manual) | Browser OAuth callback fails in this container; both paths keep your ChatGPT subscription (no API key) — see below |
 
 ### Claude Code auth (headless container gotcha)
 
@@ -164,14 +164,15 @@ long-lived token instead:
 3. If it's already running, `export CLAUDE_CODE_OAUTH_TOKEN=<token>` inside
    the container shell works too, but won't survive a rebuild.
 
-Alternatively, store the token in a Bitwarden item's **notes** and set
-`BW_CLAUDE_TOKEN_ITEM_ID=<item-id>` in `devcontainer.json`'s `containerEnv`.
-When `CLAUDE_CODE_OAUTH_TOKEN` isn't already forwarded from the host,
-`setup-agents.sh` fetches it from that item during the same Bitwarden unlock it
-uses for the GitHub App key — no host-side env needed. This fetch only fires
-when that unlock runs (i.e. when the GitHub App key isn't yet in its volume);
-once `claude` has logged in, the login state itself persists in the `~/.claude`
-volume across rebuilds.
+Alternatively, store the token in Bitwarden — no host-side env needed. Create a
+vault item **named** `claude-code-oauth-token` and paste the `claude setup-token`
+output into its **Notes**. When `CLAUDE_CODE_OAUTH_TOKEN` isn't already forwarded
+from the host, `setup-agents.sh` reads that item's Notes by name during the same
+Bitwarden unlock it uses for the App key. To use a different item name, set
+`BW_CLAUDE_TOKEN_ITEM_ID=<item name or GUID>` in `devcontainer.json`'s
+`containerEnv`. This fetch only fires when that unlock runs (i.e. when the GitHub
+App key isn't yet in its volume); once `claude` has logged in, the login state
+itself persists in the `~/.claude` volume across rebuilds.
 
 ## Repository access (GitHub App)
 
@@ -335,7 +336,18 @@ CLI updates + plugin/skill installs itself. What's left only after
    discovered by its `app-id`/`private-key-b64` fields and fetched
    automatically. On failure, fix and re-run `./.devcontainer/dc setup`
    (see [Repository access](#repository-access-github-app)).
-3. **Codex CLI auth** — run `codex` once, follow its login prompt.
+3. **Codex CLI auth** — automatic if you store it in Bitwarden (keeps your
+   ChatGPT subscription, no API key). On any machine with a browser, run
+   `codex login`, then create a vault item **named** `codex-auth-token` and
+   paste the contents of `~/.codex/auth.json` into its **Notes** (Notes, not a
+   custom field — the file is ~4 KB, over Bitwarden's 5000-char field limit).
+   Setup reads that item by name and writes `~/.codex/auth.json` on a fresh
+   volume. To use a different item name, set `BW_CODEX_AUTH_ITEM_ID=<item name
+   or GUID>` in `devcontainer.json`'s `containerEnv`. Manual fallback (no
+   Bitwarden): run `codex login --device-auth` inside the container — its
+   normal browser callback can't reach the container, so the device flow prints
+   a code + URL you approve in any browser. Either way, auth persists in the
+   `~/.codex` volume across rebuilds and auto-refreshes.
 
 Never `gh auth login` / `gh auth setup-git` — this container is
 GitHub-App-only.

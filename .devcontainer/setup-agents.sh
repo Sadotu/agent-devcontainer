@@ -249,16 +249,67 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
       "the right contents (private-key-b64 = base64 -w0 private-key.pem)."
   fi
 fi
+# --- Claude Code OAuth token (best-effort) -----------------------------------
+# Only runs when the host didn't already forward a token AND the vault is
+# unlocked (BW_SESSION is set by the GitHub App fetch above, which only unlocks
+# when that key isn't already in its volume). NOT fatal if absent — the token
+# may arrive via the host env, or `claude` may already be logged in from the
+# persisted ~/.claude volume.
+#
+# Stored as the Notes of a well-known vault item named 'claude-code-oauth-token'
+# (Notes body = the `claude setup-token` output). BW_CLAUDE_TOKEN_ITEM_ID
+# overrides that item name (accepts a name or GUID).
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v bw >/dev/null 2>&1 \
-    && [ -n "${BW_CLAUDE_TOKEN_ITEM_ID:-}" ] && [ -n "${BW_SESSION:-}" ]; then
-  CLAUDE_CODE_OAUTH_TOKEN="$(bw get notes "$BW_CLAUDE_TOKEN_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
-  [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN \
-    && echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden."
+    && [ -n "${BW_SESSION:-}" ]; then
+  claude_item="${BW_CLAUDE_TOKEN_ITEM_ID:-claude-code-oauth-token}"
+  # `bw get notes` prints only the Notes body; strip newlines so the exported
+  # token is exactly the stored one-line string.
+  CLAUDE_CODE_OAUTH_TOKEN="$(bw get notes "$claude_item" --session "$BW_SESSION" 2>/dev/null | tr -d '\r\n' || true)"
+  if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN
+    echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden item '$claude_item'."
+  else
+    echo "    (No '$claude_item' notes in vault — relying on host env or the persisted ~/.claude login.)"
+  fi
+fi
+# --- Codex CLI auth (best-effort, subscription) ------------------------------
+# Same rationale as the Claude token: seed it once from Bitwarden so `codex`
+# works headless, with no interactive `codex login --device-auth` step. Codex
+# keeps its ChatGPT subscription login in ~/.codex/auth.json (access + refresh
+# tokens); once present it auto-refreshes that file in place, and the persisted
+# ~/.codex volume carries it across rebuilds. So only seed when the file is
+# absent (fresh volume) and the vault is unlocked. NOT fatal — if it's missing,
+# `codex login --device-auth` remains the manual fallback.
+#
+# Stored as the Notes of a well-known vault item named 'codex-auth-token'
+# (Notes body = a working ~/.codex/auth.json, produced by `codex login` on any
+# machine with a browser). Notes, not a custom field: the auth.json is ~4 KB,
+# over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
+# the item name (name or GUID).
+CODEX_AUTH="$HOME/.codex/auth.json"
+if [ ! -r "$CODEX_AUTH" ] && command -v bw >/dev/null 2>&1 \
+    && [ -n "${BW_SESSION:-}" ]; then
+  codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
+  codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
+  if [ -n "$codex_notes" ]; then
+    mkdir -p "$HOME/.codex"
+    # Validate it's real Codex auth JSON (carries a refresh token → self-renews)
+    # before trusting it, so a wrong/truncated note fails here, not at runtime.
+    if printf '%s' "$codex_notes" | jq -e '.tokens.refresh_token' >/dev/null 2>&1; then
+      printf '%s\n' "$codex_notes" > "$CODEX_AUTH"
+      chmod 600 "$CODEX_AUTH"
+      echo "    Codex auth.json seeded from Bitwarden item '$codex_item'."
+    else
+      echo "    WARN: '$codex_item' notes aren't valid Codex auth JSON — skipping seed." >&2
+    fi
+  else
+    echo "    (No '$codex_item' notes in vault — run 'codex login --device-auth' to authenticate.)"
+  fi
 fi
 # Lock the vault back up only if we unlocked it — a caller-provided
 # BW_SESSION means they manage its lifecycle. Done here (not right after the
-# key fetch) so the CLAUDE_CODE_OAUTH_TOKEN fetch above can reuse the same
-# unlock — locking earlier would invalidate the session it depends on.
+# key fetch) so the CLAUDE_CODE_OAUTH_TOKEN fetch and the Codex seed above can
+# reuse the same unlock — locking earlier would invalidate the session.
 if [ "${bw_unlocked_by_us:-false}" = true ]; then
   bw lock >/dev/null 2>&1 || true
 fi
@@ -375,7 +426,16 @@ else
   echo "2. GitHub App credentials: MISSING despite setup completing — this is a"
   echo "   bug; re-run ./.devcontainer/dc setup and watch the Bitwarden step."
 fi
-echo "3. Codex CLI auth: run 'codex' once, follow its ChatGPT/API-key login."
+if [ -r "${CODEX_AUTH:-$HOME/.codex/auth.json}" ]; then
+  echo "3. Codex CLI auth: present (seeded from Bitwarden or a prior login)."
+else
+  echo "3. Codex CLI auth: not seeded. Either put a working ~/.codex/auth.json in"
+  echo "   the Notes of a Bitwarden item named 'codex-auth-token' for automatic"
+  echo "   setup, or run 'codex login --device-auth' once — its browser OAuth"
+  echo "   callback can't reach this container, so the device flow (code + URL"
+  echo "   approved in any browser) is the manual path. Either keeps your ChatGPT"
+  echo "   subscription billing and persists in the ~/.codex volume across rebuilds."
+fi
 echo "4. Do NOT run 'gh auth login' or 'gh auth setup-git' — this container"
 echo "   uses the GitHub App exclusively (see 'GitHub App auth' in CLAUDE.md"
 echo "   / AGENTS.md). 'gh'/'git push' work automatically once step 2 is done."
