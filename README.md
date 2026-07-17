@@ -76,11 +76,12 @@ filled in:
    else (Dockerfile, `setup-agents.sh`, skills) lives in the published image
    and updates by pulling a new tag, not by re-copying files.
 
-Then wire up GitHub App credentials — with Bitwarden this is a one-time
-`BW_GITHUB_APP_ITEM_ID` in `devcontainer.json` and the key is fetched
-automatically on first start (no `.pem` ever on host disk); without it, drop
-the key in manually. See [Repository access](#repository-access-github-app)
-for both. Then `./.devcontainer/dc up`.
+Then make sure the GitHub App key is in your Bitwarden vault — one item
+with `app-id` and `private-key-b64` custom text fields. First start
+discovers that item by its fields (no item ID to configure) and fetches the
+key after a one-time `bw` unlock; no `.pem` ever on host disk. See
+[Repository access](#repository-access-github-app). Then
+`./.devcontainer/dc up`.
 
 `CLAUDE.md`/`AGENTS.md` are still worth writing per-project (they're your
 project's own instructions, not something to templatize), but nothing about
@@ -217,24 +218,35 @@ auto-minted token.
 
 1. Confirm the `container-coding-agent` GitHub App is installed on this repo
    with the scopes above.
-2. Get the credential files into the volume, one of two ways:
-   - **Bitwarden (recommended, works on any machine you're logged into
-     Bitwarden on)**: on one vault item, add two custom text fields —
-     `app-id` (the numeric App ID) and `private-key-b64` (the private key,
-     base64-encoded: `base64 -w0 private-key.pem`, paste the output as the
-     field value). Custom fields work on the free tier; a file *attachment*
-     would need Premium, so this deliberately avoids that. Then set
-     `BW_GITHUB_APP_ITEM_ID=<item-id>` in `devcontainer.json`'s
-     `containerEnv`. `setup-agents.sh` prompts for `bw unlock` on first start
-     of a fresh container and decodes both automatically — no `.pem` ever
-     touches host disk outside the vault.
-   - **Manual**: `mkdir secrets && cp /path/to/private-key.pem secrets/` on
-     the host (gitignored), then inside the container:
-     ```bash
-     printf '%s\n' '<APP_ID>' > ~/.config/github-app/app-id
-     cp /path/to/private-key.pem ~/.config/github-app/private-key.pem
-     chmod 600 ~/.config/github-app/private-key.pem
-     ```
+2. Get the credential files into the volume. The expected path is
+   **Bitwarden** (works on any machine you're logged into Bitwarden on):
+   on one vault item, add two custom text fields — `app-id` (the numeric
+   App ID) and `private-key-b64` (the private key, base64-encoded:
+   `base64 -w0 private-key.pem`, paste the output as the field value).
+   Custom fields work on the free tier; a file *attachment* would need
+   Premium, so this deliberately avoids that.
+
+   That's the whole configuration: `setup-agents.sh` prompts for the
+   Bitwarden login on first start of a fresh container, **discovers the
+   item by those two field names** (no item ID to look up or configure),
+   and decodes both automatically — no `.pem` ever touches host disk
+   outside the vault. Setup **fails loudly** if the vault is unreachable,
+   the password is wrong (3 attempts), no item carries both fields, or the
+   decoded key is invalid — fix the cause and re-run with
+   `./.devcontainer/dc setup` (no rebuild needed).
+
+   If more than one vault item carries both fields, discovery refuses to
+   guess: set `BW_GITHUB_APP_ITEM_ID=<item name or GUID>` in
+   `devcontainer.json`'s `containerEnv` to pick one.
+
+   **Manual fallback** (no Bitwarden): `mkdir secrets && cp
+   /path/to/private-key.pem secrets/` on the host (gitignored), then inside
+   the container:
+   ```bash
+   printf '%s\n' '<APP_ID>' > ~/.config/github-app/app-id
+   cp /path/to/private-key.pem ~/.config/github-app/private-key.pem
+   chmod 600 ~/.config/github-app/private-key.pem
+   ```
 3. Verify: `GH_TOKEN="$(/opt/agent-devcontainer/gh-app-token.sh)" gh api /rate_limit`
    should return JSON (not an auth error), and `git fetch` should succeed.
 4. Set your git identity for commit authorship (the container has none):
@@ -319,10 +331,10 @@ CLI updates + plugin/skill installs itself. What's left only after
 
 1. **Claude Code auth** — on your host, `claude setup-token`, export
    `CLAUDE_CODE_OAUTH_TOKEN` before `dc up` (see above).
-2. **GitHub App key** — with `BW_GITHUB_APP_ITEM_ID` set, just unlock
-   Bitwarden once when prompted and the key is fetched automatically;
-   otherwise drop `app-id` + `private-key.pem` into `~/.config/github-app/`
-   manually (see [Repository access](#repository-access-github-app)).
+2. **GitHub App key** — unlock Bitwarden once when prompted; the item is
+   discovered by its `app-id`/`private-key-b64` fields and fetched
+   automatically. On failure, fix and re-run `./.devcontainer/dc setup`
+   (see [Repository access](#repository-access-github-app)).
 3. **Codex CLI auth** — run `codex` once, follow its login prompt.
 
 Never `gh auth login` / `gh auth setup-git` — this container is

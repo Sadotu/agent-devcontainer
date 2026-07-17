@@ -105,9 +105,18 @@ fi
 
 cat <<EOF
 
-Done. Next:
-  1. cd into this project (on the host).
-  2. Drop the GitHub App key in, or set BW_GITHUB_APP_ITEM_ID in
-     devcontainer.json — see the agent-devcontainer README "Repository access".
-  3. ./.devcontainer/dc up   (then: ./.devcontainer/dc shell)
+Done. Wrote .devcontainer/dc and .devcontainer/devcontainer.json.
+
+Next, from this directory (on the host):
+  1. Have one Bitwarden vault item with custom TEXT fields 'app-id' (the
+     GitHub App ID) and 'private-key-b64' (base64 -w0 private-key.pem).
+     First start finds it by those fields — no item ID needed — and asks
+     for your Bitwarden login. See the agent-devcontainer README,
+     "Repository access".
+  2. ./.devcontainer/dc up      (then: ./.devcontainer/dc shell)
+
+If 'dc up' fails with 'ENOENT ... uv_cwd': this docker run staled your
+shell's working directory — cd out and back into the project, retry.
+If the Bitwarden step fails during 'up': fix and re-run with
+'./.devcontainer/dc setup' (no rebuild needed).
 EOF
