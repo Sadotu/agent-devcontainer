@@ -95,19 +95,27 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
     bw_unlocked_by_us=false
     if [ -n "${BW_SESSION:-}" ]; then
       echo "    Reusing existing BW_SESSION from environment."
-    elif bw login --check >/dev/null 2>&1; then
-      # Already logged in (this container's HOME volume kept the login
-      # state from a prior run) — just needs unlocking.
-      echo "    Bitwarden already logged in — unlocking (interactive)..."
-      BW_SESSION="$(bw unlock --raw || true)"
-      bw_unlocked_by_us=true
     else
-      # A successful `bw login` already unlocks the vault as part of
-      # authenticating — no separate `bw unlock` needed (and calling one
-      # anyway means a second, easy-to-miss master-password prompt).
-      # --raw suppresses the banner text so stdout is just the session key.
-      echo "    Logging into Bitwarden (interactive — one-time per container)..."
-      BW_SESSION="$(bw login --raw || true)"
+      # `--raw` does NOT suppress the success banner for either `login` or
+      # `unlock` (confirmed against a real run — the "You are logged in!"
+      # reminder text prints regardless), so parse the session key out of
+      # that banner instead of trusting --raw's output shape. `tee
+      # /dev/stderr` keeps the interactive prompts (email/master
+      # password/OTP) visible in real time while still capturing the full
+      # output for parsing — stdin is untouched by piping stdout, so input
+      # still works normally.
+      if bw login --check >/dev/null 2>&1; then
+        # Already logged in (this container's HOME volume kept the login
+        # state from a prior run) — just needs unlocking.
+        echo "    Bitwarden already logged in — unlocking (interactive)..."
+        bw_out="$(bw unlock 2>&1 | tee /dev/stderr)"
+      else
+        # A successful `bw login` already unlocks the vault as part of
+        # authenticating — no separate `bw unlock` needed.
+        echo "    Logging into Bitwarden (interactive — one-time per container)..."
+        bw_out="$(bw login 2>&1 | tee /dev/stderr)"
+      fi
+      BW_SESSION="$(printf '%s' "$bw_out" | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2)"
       bw_unlocked_by_us=true
     fi
     if [ -n "$BW_SESSION" ]; then
