@@ -104,18 +104,36 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
       # password/OTP) visible in real time while still capturing the full
       # output for parsing — stdin is untouched by piping stdout, so input
       # still works normally.
-      if bw login --check >/dev/null 2>&1; then
+      # NO_COLOR/FORCE_COLOR=0: bw's CLI may still emit ANSI color codes even
+      # when its stdout isn't a real TTY (piped into tee below) unless told
+      # not to — those codes are invisible in a terminal but present in the
+      # raw bytes we parse, and can break the quote-delimited regex match.
+      bw_log="$(mktemp)"
+      if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
         # Already logged in (this container's HOME volume kept the login
         # state from a prior run) — just needs unlocking.
         echo "    Bitwarden already logged in — unlocking (interactive)..."
-        bw_out="$(bw unlock 2>&1 | tee /dev/stderr)"
+        NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
       else
         # A successful `bw login` already unlocks the vault as part of
         # authenticating — no separate `bw unlock` needed.
         echo "    Logging into Bitwarden (interactive — one-time per container)..."
-        bw_out="$(bw login 2>&1 | tee /dev/stderr)"
+        NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
       fi
-      BW_SESSION="$(printf '%s' "$bw_out" | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2)"
+      # Strip any ANSI escape codes that slipped through anyway before
+      # parsing — belt and suspenders after a real run showed extraction
+      # failing despite the banner displaying correctly on screen.
+      # `|| true` guards the whole pipeline: under `set -eo pipefail`, grep
+      # finding no match (the expected outcome on a failed login) exits
+      # nonzero, which without this would kill the entire script right here
+      # via set -e — before ever reaching the fallback warning below.
+      BW_SESSION="$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$bw_log" \
+        | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2 || true)"
+      if [ -z "$BW_SESSION" ]; then
+        echo "    DEBUG: could not find a session key in bw's output — raw log:"
+        sed 's/^/    | /' "$bw_log"
+      fi
+      rm -f "$bw_log"
       bw_unlocked_by_us=true
     fi
     if [ -n "$BW_SESSION" ]; then
