@@ -7,13 +7,38 @@ doesn't clone or copy this repo's tree.
 
 ## Using this in a project
 
-Two small files, added to your **own** project's repo (not a clone of this
-one, not a wrapper directory around it):
+A project needs exactly two files in its own repo (not a clone of this one,
+not a wrapper directory around it): `.devcontainer/dc` and
+`.devcontainer/devcontainer.json`. The image scaffolds both for you.
 
-1. `.devcontainer/dc` — copy verbatim from this repo (host-side helper,
-   unmodified, `chmod +x`).
-2. `.devcontainer/devcontainer.json` — copy the template below and fill in
-   the three placeholders:
+### Recommended: `init` (scaffold both files)
+
+From your project's directory:
+
+```bash
+docker run --rm -it -v "$PWD":/out ghcr.io/sadotu/agent-devcontainer init
+```
+
+Leave `$PWD` literal — it's a shell variable for your current directory,
+bind-mounted to `/out`; the tool writes into that folder. The command is
+identical for every project. It prompts for project name, GitHub owner
+(default `Sadotu`), and App ID (default `4217970`) — pre-filled from the
+repo's `origin` remote when present, so it's usually three enters. Existing
+files are never overwritten without a `y`.
+
+`docker run` needs Docker able to see `$PWD` (WSL/Docker Desktop integration
+on, same as `dc up`) and a reasonably fresh image — `docker pull
+ghcr.io/sadotu/agent-devcontainer` first if in doubt, since a stale local
+image scaffolds stale templates.
+
+Then wire up GitHub App credentials (below) and `./.devcontainer/dc up`.
+
+### Manual alternative (the two files by hand)
+
+If you'd rather not run the image, `.devcontainer/dc` is host-side and
+project-agnostic — copy it verbatim from this repo (`chmod +x`) — and
+`.devcontainer/devcontainer.json` is this template with three placeholders
+filled in:
 
    ```json
    {
@@ -310,7 +335,10 @@ This repo's own `.devcontainer/devcontainer.json` uses `build`, not `image`
 locally to test changes before publishing. Workflow:
 
 1. Edit `Dockerfile` / `setup-agents.sh` / `gh-app-token.sh` /
-   `git-credential-github-app.sh` / `githooks/pre-push` / `agents.toml`.
+   `git-credential-github-app.sh` / `githooks/pre-push` / `agents.toml` /
+   `init.sh` / `devcontainer.json.template`. Note `dc` is baked into the
+   image as `templates/dc` (the `init` scaffolder emits it), so a change to
+   `dc` is an image change — rebuild/publish, don't just hand-edit consumers.
 2. `./.devcontainer/dc rebuild` — builds and starts against this repo's own
    dogfood volumes (`agent-devcontainer-dev-*`), isolated from any real
    project's containers.
@@ -318,7 +346,9 @@ locally to test changes before publishing. Workflow:
    `/opt/agent-devcontainer/gh-app-token.sh` (needs this repo's own App
    credentials set up per [Repository access](#repository-access-github-app)
    if you want to test that path), `dotagents install` picks up
-   `agent-skills`.
+   `agent-skills`. Also smoke-test the scaffolder against a throwaway dir:
+   `docker run --rm -it -v /tmp/scaffold-test:/out <built-image-tag> init`
+   (make the dir first) and confirm it writes a valid `.devcontainer/`.
 4. Push to `main` (via PR). `.github/workflows/publish-image.yml` builds and
    pushes `ghcr.io/sadotu/agent-devcontainer:latest` +
    `:<commit-sha>` automatically, using the workflow's own `GITHUB_TOKEN` —
