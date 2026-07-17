@@ -51,9 +51,11 @@ one, not a wrapper directory around it):
    else (Dockerfile, `setup-agents.sh`, skills) lives in the published image
    and updates by pulling a new tag, not by re-copying files.
 
-Then `mkdir secrets && cp /path/to/private-key.pem secrets/` (see
-[Repository access](#repository-access-github-app) — or skip this if using
-the Bitwarden bootstrap below), and `./.devcontainer/dc up`.
+Then wire up GitHub App credentials — with Bitwarden this is a one-time
+`BW_GITHUB_APP_ITEM_ID` in `devcontainer.json` and the key is fetched
+automatically on first start (no `.pem` ever on host disk); without it, drop
+the key in manually. See [Repository access](#repository-access-github-app)
+for both. Then `./.devcontainer/dc up`.
 
 `CLAUDE.md`/`AGENTS.md` are still worth writing per-project (they're your
 project's own instructions, not something to templatize), but nothing about
@@ -111,11 +113,12 @@ same result.
 
 ## Authenticate (one time, inside the container)
 
-Tokens are entered manually and stored in container volumes — never commit them.
+Credentials are fetched from Bitwarden if configured, or entered manually,
+and stored in container volumes — never commit them.
 
 | Tool | Command | Notes |
 |------|---------|-------|
-| GitHub (git + `gh`) | drop the App key into `~/.config/github-app/` (once) | Automatic thereafter — see [Repository access](#repository-access-github-app) |
+| GitHub (git + `gh`) | Bitwarden: unlock once at first start (key fetched automatically). Manual: drop the App key into `~/.config/github-app/` once | Automatic thereafter — see [Repository access](#repository-access-github-app) |
 | Claude Code | `claude` | Browser OAuth login fails in this container — see below |
 | Codex CLI | `codex` | First run prompts for ChatGPT login or API key |
 
@@ -135,6 +138,15 @@ long-lived token instead:
 3. If it's already running, `export CLAUDE_CODE_OAUTH_TOKEN=<token>` inside
    the container shell works too, but won't survive a rebuild.
 
+Alternatively, store the token in a Bitwarden item's **notes** and set
+`BW_CLAUDE_TOKEN_ITEM_ID=<item-id>` in `devcontainer.json`'s `containerEnv`.
+When `CLAUDE_CODE_OAUTH_TOKEN` isn't already forwarded from the host,
+`setup-agents.sh` fetches it from that item during the same Bitwarden unlock it
+uses for the GitHub App key — no host-side env needed. This fetch only fires
+when that unlock runs (i.e. when the GitHub App key isn't yet in its volume);
+once `claude` has logged in, the login state itself persists in the `~/.claude`
+volume across rebuilds.
+
 ## Repository access (GitHub App)
 
 The container authenticates to GitHub as the **`container-coding-agent`
@@ -147,8 +159,9 @@ auto-minted token.
 - **The App is installed** on `__GH_OWNER__/__PROJECT_NAME__` with the minimum
   scopes agents need: **Contents**, **Pull requests**, and **Issues**
   (Read and write), **Metadata** (read, automatic).
-- **The private key lives in a persisted volume**, dropped in once (see setup
-  below):
+- **The private key lives in a persisted volume**, populated once at first
+  start — automatically from Bitwarden if configured, or dropped in manually
+  (see setup below):
 
   | File | Contents |
   |------|----------|
@@ -281,8 +294,10 @@ CLI updates + plugin/skill installs itself. What's left only after
 
 1. **Claude Code auth** — on your host, `claude setup-token`, export
    `CLAUDE_CODE_OAUTH_TOKEN` before `dc up` (see above).
-2. **GitHub App key** — drop `app-id` + `private-key.pem` into
-   `~/.config/github-app/` (see [Repository access](#repository-access-github-app)).
+2. **GitHub App key** — with `BW_GITHUB_APP_ITEM_ID` set, just unlock
+   Bitwarden once when prompted and the key is fetched automatically;
+   otherwise drop `app-id` + `private-key.pem` into `~/.config/github-app/`
+   manually (see [Repository access](#repository-access-github-app)).
 3. **Codex CLI auth** — run `codex` once, follow its login prompt.
 
 Never `gh auth login` / `gh auth setup-git` — this container is
