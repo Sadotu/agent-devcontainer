@@ -17,6 +17,6 @@ secrets/
 *.log
 node_modules/
 
-# Cloned project repos live here; keep dir, ignore contents
-repo/*
-!repo/.gitkeep
+# Dogfood copy dropped in by setup-agents.sh when developing this repo's own
+# devcontainer — source of truth is .devcontainer/agents.toml.
+/agents.toml

@@ -2,6 +2,12 @@
 # CLI-first devcontainer helper — no VS Code required.
 # Wraps @devcontainers/cli against this workspace.
 #
+# Host-side only — runs before any container exists, so unlike the other
+# .devcontainer/ scripts this one stays a small per-project file rather than
+# baked into the shared image (see Dockerfile). PROJECT_NAME defaults to the
+# workspace directory's name; override by exporting PROJECT_NAME if the repo
+# dir doesn't match the name declared in devcontainer.json's containerEnv.
+#
 #   ./.devcontainer/dc up        build + start the container (runs postCreate)
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
 #   ./.devcontainer/dc exec ...   run a one-off command inside
@@ -17,6 +23,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER_LABEL="devcontainer.local_folder=$ROOT"
+PROJECT_NAME="${PROJECT_NAME:-$(basename "$ROOT")}"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -65,9 +72,9 @@ case "$cmd" in
     fi
     docker ps -aq --filter "label=$CONTAINER_LABEL" | xargs -r docker rm -f
     docker volume rm -f \
-      __PROJECT_NAME__-claude-config __PROJECT_NAME__-codex-config \
-      __PROJECT_NAME__-gh-config __PROJECT_NAME__-github-app-config \
-      __PROJECT_NAME__-shell-history
+      "$PROJECT_NAME-claude-config" "$PROJECT_NAME-codex-config" \
+      "$PROJECT_NAME-gh-config" "$PROJECT_NAME-github-app-config" \
+      "$PROJECT_NAME-shell-history"
     echo "Container and persisted agent config/auth volumes deleted. Re-auth required next 'up'."
     ;;
   *)

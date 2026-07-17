@@ -1,16 +1,16 @@
 {
-  "name": "__PROJECT_NAME__-agents",
+  "name": "agent-devcontainer-dev",
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "workspaceFolder": "/workspaces/__PROJECT_NAME__",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/__PROJECT_NAME__,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/agent-devcontainer",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/agent-devcontainer,type=bind,consistency=cached",
   "mounts": [
-    "source=__PROJECT_NAME__-claude-config,target=/home/vscode/.claude,type=volume",
-    "source=__PROJECT_NAME__-codex-config,target=/home/vscode/.codex,type=volume",
-    "source=__PROJECT_NAME__-gh-config,target=/home/vscode/.config/gh,type=volume",
-    "source=__PROJECT_NAME__-github-app-config,target=/home/vscode/.config/github-app,type=volume",
-    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
+    "source=agent-devcontainer-dev-claude-config,target=/home/vscode/.claude,type=volume",
+    "source=agent-devcontainer-dev-codex-config,target=/home/vscode/.codex,type=volume",
+    "source=agent-devcontainer-dev-gh-config,target=/home/vscode/.config/gh,type=volume",
+    "source=agent-devcontainer-dev-github-app-config,target=/home/vscode/.config/github-app,type=volume",
+    "source=agent-devcontainer-dev-shell-history,target=/home/vscode/.history,type=volume"
   ],
   "remoteUser": "vscode",
   "runArgs": [
@@ -20,9 +20,12 @@
   ],
   "containerEnv": {
     "HISTFILE": "/home/vscode/.history/.bash_history",
-    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}"
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "PROJECT_NAME": "agent-devcontainer",
+    "GH_OWNER": "Sadotu",
+    "APP_ID": "4217970"
   },
-  "postCreateCommand": "bash .devcontainer/setup-agents.sh",
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
   "customizations": {
     "vscode": {
       "extensions": [

@@ -1,4 +1,4 @@
-# __PROJECT_NAME__ — Agent Instructions
+# agent-devcontainer — Agent Instructions
 
 ## Commit Authorship
 - **Never add agent authorship to commits.** Do NOT append `Co-Authored-By: Claude`
@@ -13,7 +13,7 @@ A secure devcontainer for running Claude Code and Codex lives in
 authentication, and the safe issue workflow.
 
 When running **inside the container** (workspace mounted at
-`/workspaces/__PROJECT_NAME__`):
+`/workspaces/agent-devcontainer`):
 - You are on Linux — no `wsl` prefixes, no `/mnt/c` paths.
 - The container mounts only this repo. Host home, `~/.ssh`, and host
   credentials do not exist here. **Do NOT run `gh auth login` or
@@ -30,7 +30,7 @@ When running **inside the container** (workspace mounted at
   devcontainer's workspace-only bind mount is already the sandbox boundary,
   so Codex's inner bwrap sandbox is redundant. See `.devcontainer/setup-agents.sh`
   `cx`/`cx-auto` aliases.
-- `__PROJECT_NAME__-github-app-config` volume mounts root-owned on first use,
+- `<project>-github-app-config` volume mounts root-owned on first use,
   same as the other named volumes — but was missing from the `chown -R` list
   in `setup-agents.sh`, so `vscode` couldn't write `app-id`/`private-key.pem`
   into it. `sudo` is blocked by `no-new-privileges`, so there's no in-container
@@ -40,15 +40,15 @@ When running **inside the container** (workspace mounted at
 ### GitHub App auth
 
 Use the configured GitHub App for all GitHub CLI issue and PR commands —
-never a user PAT, never `gh auth login`. The App ID is `__APP_ID__`; the private
-key is mounted outside the repo (persisted container volume, seeded from
-`./secrets/` on the host — gitignored, never commit it) and must never be
+never a user PAT, never `gh auth login`. The App ID is `4217970`; the private
+key is mounted outside the repo (persisted container volume, fetched from
+Bitwarden or dropped in manually — never committed) and must never be
 printed or committed.
 
-Before every `gh` command, mint a short-lived token with the workspace helper:
+Before every `gh` command, mint a short-lived token with the baked-in helper:
 
 ```bash
-GH_TOKEN="$(GITHUB_APP_REPO=__GH_OWNER__/__PROJECT_NAME__ /workspaces/__PROJECT_NAME__/.devcontainer/gh-app-token.sh)" gh issue list --repo __GH_OWNER__/__PROJECT_NAME__
+GH_TOKEN="$(/opt/agent-devcontainer/gh-app-token.sh)" gh issue list --repo Sadotu/agent-devcontainer
 ```
 
 `git push`/`git fetch` need no manual auth — a credential helper wired by

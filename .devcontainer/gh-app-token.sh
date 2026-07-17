@@ -19,7 +19,7 @@ APP_DIR="${GITHUB_APP_DIR:-$DEFAULT_APP_DIR}"
 APP_ID_FILE="$APP_DIR/app-id"
 PEM="$APP_DIR/private-key.pem"
 CACHE="$APP_DIR/.token-cache"
-REPO="${GITHUB_APP_REPO:-__GH_OWNER__/__PROJECT_NAME__}"
+REPO="${GITHUB_APP_REPO:-${GH_OWNER:?GH_OWNER or GITHUB_APP_REPO must be set}/${PROJECT_NAME:?PROJECT_NAME or GITHUB_APP_REPO must be set}}"
 
 [ -r "$APP_ID_FILE" ] || { echo "gh-app-token: missing $APP_ID_FILE" >&2; exit 1; }
 [ -r "$PEM" ]         || { echo "gh-app-token: missing $PEM" >&2; exit 1; }

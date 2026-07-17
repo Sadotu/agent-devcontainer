@@ -1,0 +1,6 @@
+version = 1
+agents = ["claude", "codex"]
+
+[[skills]]
+name = "github-issue"
+source = "Sadotu/agent-skills"

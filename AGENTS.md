@@ -1,7 +1,7 @@
-# __PROJECT_NAME__ — Codex Instructions
+# agent-devcontainer — Codex Instructions
 
 You are working inside a devcontainer that mounts **only** this repo
-(`/workspaces/__PROJECT_NAME__`). There is no access to the host machine,
+(`/workspaces/agent-devcontainer`). There is no access to the host machine,
 its home directory, or its credentials. Never write secrets or tokens into
 the repository.
 
@@ -54,13 +54,13 @@ Co-Authored-By trailers.
 ## GitHub App auth
 
 Use the configured GitHub App for all GitHub CLI issue and PR commands. The
-App ID is `__APP_ID__`; the private key is mounted outside the repo and must
+App ID is `4217970`; the private key is mounted outside the repo and must
 never be printed or committed.
 
-Before every `gh` command, mint a short-lived token with the workspace helper:
+Before every `gh` command, mint a short-lived token with the baked-in helper:
 
 ```bash
-GH_TOKEN="$(GITHUB_APP_REPO=__GH_OWNER__/__PROJECT_NAME__ /workspaces/__PROJECT_NAME__/.devcontainer/gh-app-token.sh)" gh issue list --repo __GH_OWNER__/__PROJECT_NAME__
+GH_TOKEN="$(/opt/agent-devcontainer/gh-app-token.sh)" gh issue list --repo Sadotu/agent-devcontainer
 ```
 
 Do not use unauthenticated `gh issue`, `gh pr`, or `gh api` commands when

@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# postCreateCommand for the __PROJECT_NAME__ agent devcontainer.
+# postCreateCommand for the shared agent devcontainer image. Baked into the
+# image at /opt/agent-devcontainer/setup-agents.sh — every project's thin
+# devcontainer.json points postCreateCommand here rather than at a
+# per-project copy, and supplies PROJECT_NAME/GH_OWNER via containerEnv.
 # Idempotent — safe to re-run on every container rebuild.
 set -euo pipefail
 
-WORKSPACE="/workspaces/__PROJECT_NAME__"
+: "${PROJECT_NAME:?PROJECT_NAME must be set via devcontainer.json containerEnv}"
+WORKSPACE="/workspaces/$PROJECT_NAME"
+TOOLDIR="/opt/agent-devcontainer"
 BASHRC="$HOME/.bashrc"
 
 echo "==> Fixing ownership of persisted config volumes"
@@ -32,14 +37,14 @@ git config --global init.defaultBranch main
 # The hook is COPIED (not referenced in place) so it keeps its exec bit
 # regardless of Windows-mount permission quirks.
 mkdir -p "$HOME/.githooks"
-install -m 0755 "$WORKSPACE/.devcontainer/githooks/pre-push" "$HOME/.githooks/pre-push"
+install -m 0755 "$TOOLDIR/githooks/pre-push" "$HOME/.githooks/pre-push"
 git config --global core.hooksPath "$HOME/.githooks"
 
 echo "==> Shell aliases"
-if ! grep -q "# --- __PROJECT_NAME__ agent aliases ---" "$BASHRC"; then
+if ! grep -q "# --- agent-devcontainer aliases ---" "$BASHRC"; then
   cat >> "$BASHRC" <<'EOF'
 
-# --- __PROJECT_NAME__ agent aliases ---
+# --- agent-devcontainer aliases ---
 # Codex uses --sandbox danger-full-access, not workspace-write: Codex's own
 # bwrap sandbox needs unprivileged user namespaces, which Docker's default
 # seccomp profile blocks (bwrap: "No permissions to create a new namespace").
@@ -56,20 +61,68 @@ echo "==> Shared skills location"
 mkdir -p "$WORKSPACE/.agents/skills"
 
 # --- GitHub App identity (scoped, admin-free push/PR auth) --------------------
-# The container authenticates to GitHub as the "container-coding-agent" App via
-# short-lived installation tokens minted from its private key. No user PAT, no
-# repo-admin token ever lives here. Drop the App's credentials into the persisted
-# volume once:
+# The container authenticates to GitHub as the configured App via short-lived
+# installation tokens minted from its private key. No user PAT, no repo-admin
+# token ever lives here. Credentials land in the persisted volume at:
 #   /home/vscode/.config/github-app/app-id           (the numeric App ID)
 #   /home/vscode/.config/github-app/private-key.pem  (the App's private key)
+# — fetched from Bitwarden below if configured, or dropped in manually
+# otherwise (see the manual checklist at the end of this script).
 #
 # Then git push / gh use the App automatically via the credential helper below.
 # Agents: NEVER run `gh auth login` or `gh auth setup-git` in this container —
 # see the "GitHub App auth" section in CLAUDE.md / AGENTS.md.
-mkdir -p /home/vscode/.config/github-app
+GITHUB_APP_DIR="$HOME/.config/github-app"
+mkdir -p "$GITHUB_APP_DIR"
 git config --global credential.https://github.com.helper \
-  "!$WORKSPACE/.devcontainer/git-credential-github-app.sh"
+  "!$TOOLDIR/git-credential-github-app.sh"
 # ------------------------------------------------------------------------------
+
+echo "==> Secrets bootstrap (Bitwarden)"
+# One-time per container: if the GitHub App credentials aren't already in the
+# persisted volume, pull them from Bitwarden instead of a manual .pem drop.
+# Requires BW_GITHUB_APP_ITEM_ID (the vault item's ID) to be set — passed in
+# via devcontainer.json containerEnv/remoteEnv, same as CLAUDE_CODE_OAUTH_TOKEN.
+# Silently skipped (falls back to the manual checklist) if bw isn't
+# configured yet — this is optional infrastructure, not a hard requirement.
+#
+# Uses a base64-encoded custom field, not a Bitwarden attachment: file
+# attachments are a Premium-only feature, custom fields work on the free
+# tier. The item needs an "app-id" text field and a "private-key-b64" text
+# field (private-key.pem run through `base64 -w0`).
+if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
+  if command -v bw >/dev/null 2>&1 && [ -n "${BW_GITHUB_APP_ITEM_ID:-}" ]; then
+    echo "    Unlocking Bitwarden (interactive — one-time per container)..."
+    bw login --check >/dev/null 2>&1 || bw login || true
+    BW_SESSION="$(bw unlock --raw 2>/dev/null || true)"
+    if [ -n "$BW_SESSION" ]; then
+      item_json="$(bw get item "$BW_GITHUB_APP_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
+      if [ -n "$item_json" ] \
+          && printf '%s' "$item_json" \
+               | jq -r '.fields[] | select(.name=="private-key-b64") | .value' \
+               | base64 -d > "$GITHUB_APP_DIR/private-key.pem" \
+          && printf '%s' "$item_json" \
+               | jq -r '.fields[] | select(.name=="app-id") | .value' \
+               > "$GITHUB_APP_DIR/app-id" \
+          && [ -s "$GITHUB_APP_DIR/private-key.pem" ] && [ -s "$GITHUB_APP_DIR/app-id" ]; then
+        chmod 600 "$GITHUB_APP_DIR/private-key.pem"
+        echo "    GitHub App credentials fetched from Bitwarden."
+      else
+        rm -f "$GITHUB_APP_DIR/private-key.pem" "$GITHUB_APP_DIR/app-id"
+        echo "WARNING: Bitwarden fetch failed — see manual checklist below."
+      fi
+      bw lock >/dev/null 2>&1 || true
+    else
+      echo "WARNING: Bitwarden unlock failed — see manual checklist below."
+    fi
+  fi
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v bw >/dev/null 2>&1 \
+    && [ -n "${BW_CLAUDE_TOKEN_ITEM_ID:-}" ] && [ -n "${BW_SESSION:-}" ]; then
+  CLAUDE_CODE_OAUTH_TOKEN="$(bw get notes "$BW_CLAUDE_TOKEN_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
+  [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN \
+    && echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden."
+fi
 
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
 # No sudo: --security-opt no-new-privileges disables it at runtime, and the
@@ -80,10 +133,10 @@ echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
 mkdir -p "$HOME/.npm-global"
 npm config set prefix "$HOME/.npm-global" >/dev/null 2>&1 || true
 export PATH="$HOME/.npm-global/bin:$PATH"
-if ! grep -q "# --- __PROJECT_NAME__ npm-global PATH ---" "$BASHRC"; then
+if ! grep -q "# --- agent-devcontainer npm-global PATH ---" "$BASHRC"; then
   cat >> "$BASHRC" <<'EOF'
 
-# --- __PROJECT_NAME__ npm-global PATH ---
+# --- agent-devcontainer npm-global PATH ---
 export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 fi
@@ -104,11 +157,16 @@ claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /'
 claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || true
 claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || true
 
-mkdir -p "$HOME/.claude/skills"
-if [ -d "$WORKSPACE/.agents/skills/github-issue" ] && [ ! -e "$HOME/.claude/skills/github-issue" ]; then
-  ln -s "$WORKSPACE/.agents/skills/github-issue" "$HOME/.claude/skills/github-issue"
-  echo "    symlinked github-issue skill into ~/.claude/skills/"
-fi
+echo "==> Self-authored skills (dotagents)"
+# Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
+# distributed via dotagents instead of a per-repo file copy — one command
+# symlinks each skill into every tool's expected location (.claude/skills/,
+# Codex's .agents/skills/, ...). The manifest is baked into the image; drop a
+# copy into the workspace (without clobbering a project-customized one) since
+# dotagents reads agents.toml from its working directory, not from a flag.
+cp -n "$TOOLDIR/agents.toml" "$WORKSPACE/agents.toml" 2>/dev/null || true
+(cd "$WORKSPACE" && npx -y @sentry/dotagents install 2>&1 | sed 's/^/    /') || \
+  echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
 
 echo "==> Codex plugins/skills"
 # Codex reserves the marketplace name "openai-curated" (what openai/plugins'
@@ -169,12 +227,19 @@ echo "   re-entry. See README.md."
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "   -> CLAUDE_CODE_OAUTH_TOKEN detected, already preconfigured this run."
 fi
-echo "2. GitHub App credentials: only needed once, and only after a 'dc nuke'"
-echo "   (a plain rebuild keeps them). Drop into the persisted volume:"
-echo "     printf '%s\n' '<APP_ID>' > ~/.config/github-app/app-id"
-echo "     cp /path/to/private-key.pem ~/.config/github-app/private-key.pem"
-echo "     chmod 600 ~/.config/github-app/private-key.pem"
-echo "   The private key lives at ./secrets/ in this repo on the host (gitignored)."
+if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
+  echo "2. GitHub App credentials: not found (and no BW_GITHUB_APP_ITEM_ID set, or"
+  echo "   Bitwarden fetch failed above). Only needed once, and only after a"
+  echo "   'dc nuke' (a plain rebuild keeps them). Either:"
+  echo "     a) set BW_GITHUB_APP_ITEM_ID to a Bitwarden item holding a"
+  echo "        'private-key.pem' attachment and an 'app-id' custom field, or"
+  echo "     b) drop it in manually:"
+  echo "          printf '%s\n' '<APP_ID>' > ~/.config/github-app/app-id"
+  echo "          cp /path/to/private-key.pem ~/.config/github-app/private-key.pem"
+  echo "          chmod 600 ~/.config/github-app/private-key.pem"
+else
+  echo "2. GitHub App credentials: present."
+fi
 echo "3. Codex CLI auth: run 'codex' once, follow its ChatGPT/API-key login."
 echo "4. Do NOT run 'gh auth login' or 'gh auth setup-git' — this container"
 echo "   uses the GitHub App exclusively (see 'GitHub App auth' in CLAUDE.md"

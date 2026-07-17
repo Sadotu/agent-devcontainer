@@ -1,4 +1,7 @@
-# __PROJECT_NAME__ secure agent workspace.
+# Secure agent workspace — shared image for every project using this
+# devcontainer. Nothing project-specific is baked in; PROJECT_NAME/GH_OWNER/
+# APP_ID are supplied at container start via each project's own
+# devcontainer.json (see /opt/agent-devcontainer/setup-agents.sh).
 #
 # Security model:
 # - Only the workspace folder is bind-mounted (see devcontainer.json).
@@ -46,6 +49,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
+        @bitwarden/cli \
     && npm cache clean --force
 
 # Pre-create mount targets for the persisted config named volumes, owned by
@@ -57,3 +61,19 @@ RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
         /home/vscode/.config/gh /home/vscode/.config/github-app /home/vscode/.history \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex \
         /home/vscode/.config /home/vscode/.history
+
+# Devcontainer tooling shared by every project — postCreateCommand in each
+# project's thin devcontainer.json points here rather than at a per-project
+# copy, so updates to these scripts ship by rebuilding this image.
+# NOTE: `dc` is NOT baked in here — it's a host-side wrapper that invokes
+# `devcontainer up` to *create* the container in the first place, so it has
+# to exist in the project repo before any image is ever pulled. It stays a
+# small per-project file (see devcontainer.json below).
+COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
+        /opt/agent-devcontainer/
+COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
+COPY agents.toml /opt/agent-devcontainer/agents.toml
+RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
+        /opt/agent-devcontainer/gh-app-token.sh \
+        /opt/agent-devcontainer/git-credential-github-app.sh \
+        /opt/agent-devcontainer/githooks/pre-push

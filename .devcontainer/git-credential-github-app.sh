@@ -3,7 +3,7 @@
 #
 # Wire it up (already done by setup-agents.sh):
 #   git config --global credential.https://github.com.helper \
-#     '!/workspaces/uboulder/.devcontainer/git-credential-github-app.sh'
+#     '!/opt/agent-devcontainer/git-credential-github-app.sh'
 #
 # Git invokes this with "get" before each authenticated fetch/push; we answer
 # with a freshly-minted (and cached) App installation token as the password.
