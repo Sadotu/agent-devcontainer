@@ -92,9 +92,15 @@ echo "==> Secrets bootstrap (Bitwarden)"
 # field (private-key.pem run through `base64 -w0`).
 if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
   if command -v bw >/dev/null 2>&1 && [ -n "${BW_GITHUB_APP_ITEM_ID:-}" ]; then
-    echo "    Unlocking Bitwarden (interactive — one-time per container)..."
-    bw login --check >/dev/null 2>&1 || bw login || true
-    BW_SESSION="$(bw unlock --raw 2>/dev/null || true)"
+    bw_unlocked_by_us=false
+    if [ -n "${BW_SESSION:-}" ]; then
+      echo "    Reusing existing BW_SESSION from environment."
+    else
+      echo "    Unlocking Bitwarden (interactive — one-time per container)..."
+      bw login --check >/dev/null 2>&1 || bw login || true
+      BW_SESSION="$(bw unlock --raw 2>/dev/null || true)"
+      bw_unlocked_by_us=true
+    fi
     if [ -n "$BW_SESSION" ]; then
       item_json="$(bw get item "$BW_GITHUB_APP_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
       if [ -n "$item_json" ] \
@@ -111,7 +117,12 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
         rm -f "$GITHUB_APP_DIR/private-key.pem" "$GITHUB_APP_DIR/app-id"
         echo "WARNING: Bitwarden fetch failed — see manual checklist below."
       fi
-      bw lock >/dev/null 2>&1 || true
+      # Only lock the session back up if we're the ones who unlocked it —
+      # reusing a caller-provided BW_SESSION means they're managing its
+      # lifecycle, not us.
+      if [ "$bw_unlocked_by_us" = true ]; then
+        bw lock >/dev/null 2>&1 || true
+      fi
     else
       echo "WARNING: Bitwarden unlock failed — see manual checklist below."
     fi
