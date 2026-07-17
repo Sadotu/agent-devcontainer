@@ -79,39 +79,65 @@ git config --global credential.https://github.com.helper \
 # ------------------------------------------------------------------------------
 
 echo "==> Secrets bootstrap (Bitwarden)"
-# One-time per container: if the GitHub App credentials aren't already in the
-# persisted volume, pull them from Bitwarden instead of a manual .pem drop.
-# Requires BW_GITHUB_APP_ITEM_ID (the vault item's ID) to be set — passed in
-# via devcontainer.json containerEnv/remoteEnv, same as CLAUDE_CODE_OAUTH_TOKEN.
-# Silently skipped (falls back to the manual checklist) if bw isn't
-# configured yet — this is optional infrastructure, not a hard requirement.
+# GitHub App credentials are REQUIRED — without them no App token can be
+# minted, so nothing in this container can push, PR, or use `gh`. If they
+# aren't already in the persisted volume (first start, or after `dc
+# wipe-volumes`), they MUST come out of Bitwarden here, and failure is
+# fatal: better a loud postCreate error than a "working" container whose
+# first git push dies with a confusing auth error.
+#
+# No vault item ID is needed (it can't be known before unlocking anyway —
+# chicken-and-egg): after unlock the item is DISCOVERED by its custom
+# fields, i.e. the single vault item carrying both an "app-id" and a
+# "private-key-b64" text field. BW_GITHUB_APP_ITEM_ID (item *name* or GUID —
+# `bw get item` accepts either) remains as an optional override for vaults
+# where that discovery is ambiguous.
 #
 # Uses a base64-encoded custom field, not a Bitwarden attachment: file
 # attachments are a Premium-only feature, custom fields work on the free
-# tier. The item needs an "app-id" text field and a "private-key-b64" text
-# field (private-key.pem run through `base64 -w0`).
+# tier ("private-key-b64" = private-key.pem run through `base64 -w0`).
+
+# Fatal-error helper: every bw failure path funnels here. Exits nonzero so
+# `dc up` surfaces the postCreate failure instead of scrolling past it.
+bw_fail() {
+  echo "" >&2
+  echo "ERROR: $1" >&2
+  shift
+  local line
+  for line in "$@"; do echo "       $line" >&2; done
+  echo "" >&2
+  echo "       Fix the issue, then re-run setup WITHOUT a rebuild:" >&2
+  echo "         ./.devcontainer/dc setup" >&2
+  echo "       (Manual fallback — drop the credentials in yourself:" >&2
+  echo "        see 'Repository access' in the agent-devcontainer README.)" >&2
+  exit 1
+}
+
 if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
-  if command -v bw >/dev/null 2>&1 && [ -n "${BW_GITHUB_APP_ITEM_ID:-}" ]; then
-    bw_unlocked_by_us=false
-    if [ -n "${BW_SESSION:-}" ]; then
-      echo "    Reusing existing BW_SESSION from environment."
-    else
-      # `--raw` does NOT suppress the success banner for either `login` or
-      # `unlock` (confirmed against a real run — the "You are logged in!"
-      # reminder text prints regardless), so parse the session key out of
-      # that banner instead of trusting --raw's output shape. `tee
-      # /dev/stderr` keeps the interactive prompts (email/master
-      # password/OTP) visible in real time while still capturing the full
-      # output for parsing — stdin is untouched by piping stdout, so input
-      # still works normally.
-      # NO_COLOR/FORCE_COLOR=0: bw's CLI may still emit ANSI color codes even
-      # when its stdout isn't a real TTY (piped into tee below) unless told
-      # not to — those codes are invisible in a terminal but present in the
-      # raw bytes we parse, and can break the quote-delimited regex match.
+  command -v bw >/dev/null 2>&1 \
+    || bw_fail "Bitwarden CLI (bw) not found in the image — cannot fetch the GitHub App key."
+  bw_unlocked_by_us=false
+  if [ -n "${BW_SESSION:-}" ]; then
+    echo "    Reusing existing BW_SESSION from environment."
+  else
+    # `--raw` does NOT suppress the success banner for either `login` or
+    # `unlock`, so parse the session key out of that banner instead of
+    # trusting --raw's output shape. `tee` keeps the interactive prompts
+    # (email/master password/OTP) visible in real time while still capturing
+    # the full output for parsing — stdin is untouched by piping stdout, so
+    # input still works normally.
+    # NO_COLOR/FORCE_COLOR=0: bw may emit ANSI codes even when stdout isn't
+    # a TTY (piped into tee below) — invisible on screen but present in the
+    # bytes we parse, breaking the quote-delimited regex match.
+    # Wrong-password is the common failure, so it retries (3 attempts);
+    # network-down and no-terminal failures are fatal immediately — retrying
+    # those re-prompts into the void.
+    bw_attempt=1
+    while :; do
       bw_log="$(mktemp)"
       if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
-        # Already logged in (this container's HOME volume kept the login
-        # state from a prior run) — just needs unlocking.
+        # Already logged in (login state persisted from a prior run in this
+        # container) — just needs unlocking.
         echo "    Bitwarden already logged in — unlocking (interactive)..."
         NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
       else
@@ -120,47 +146,107 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
         echo "    Logging into Bitwarden (interactive — one-time per container)..."
         NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
       fi
-      # Strip any ANSI escape codes that slipped through anyway before
-      # parsing — belt and suspenders after a real run showed extraction
-      # failing despite the banner displaying correctly on screen.
-      # `|| true` guards the whole pipeline: under `set -eo pipefail`, grep
-      # finding no match (the expected outcome on a failed login) exits
-      # nonzero, which without this would kill the entire script right here
-      # via set -e — before ever reaching the fallback warning below.
+      # Strip ANSI escapes before parsing. `|| true` guards the whole
+      # pipeline: under `set -eo pipefail`, grep finding no match (the
+      # expected outcome on a failed login) would otherwise kill the script
+      # right here via set -e (see gotchas in CLAUDE.md).
       BW_SESSION="$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$bw_log" \
         | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2 || true)"
-      if [ -z "$BW_SESSION" ]; then
-        echo "    DEBUG: could not find a session key in bw's output — raw log:"
-        sed 's/^/    | /' "$bw_log"
+      if [ -n "$BW_SESSION" ]; then
+        rm -f "$bw_log"
+        bw_unlocked_by_us=true
+        break
       fi
+      # No session — classify the failure from bw's own output.
+      if grep -qiE 'ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network error|cannot connect|failed to fetch' "$bw_log"; then
+        rm -f "$bw_log"
+        bw_fail "Cannot reach Bitwarden — network problem (see output above)." \
+          "Check the container's network / VPN / Bitwarden server status."
+      fi
+      if grep -qiE 'incorrect|invalid master password' "$bw_log"; then
+        rm -f "$bw_log"
+        if [ "$bw_attempt" -ge 3 ]; then
+          bw_fail "Bitwarden login/unlock failed after 3 attempts (wrong master password?)."
+        fi
+        bw_attempt=$((bw_attempt + 1))
+        echo "    Wrong credentials — retrying (attempt $bw_attempt/3)..."
+        continue
+      fi
+      # Neither a session nor a recognizable error: most likely bw never got
+      # an interactive terminal to prompt on (e.g. VS Code "Rebuild
+      # Container" runs postCreate without stdin). Dump the log for
+      # diagnosis and point at the interactive re-run path.
+      echo "    DEBUG: could not find a session key in bw's output — raw log:"
+      sed 's/^/    | /' "$bw_log"
       rm -f "$bw_log"
-      bw_unlocked_by_us=true
+      bw_fail "Bitwarden login produced no session and no recognizable error." \
+        "If this setup ran non-interactively (VS Code rebuild), run it from" \
+        "a terminal instead — that's what 'dc setup' below is for."
+    done
+  fi
+
+  # --- Item selection: explicit override, or discovery by custom fields ------
+  if [ -n "${BW_GITHUB_APP_ITEM_ID:-}" ]; then
+    item_json="$(bw get item "$BW_GITHUB_APP_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
+    [ -n "$item_json" ] \
+      || bw_fail "BW_GITHUB_APP_ITEM_ID is set ('$BW_GITHUB_APP_ITEM_ID') but matches no unique vault item." \
+           "It accepts an item name or GUID; a name must match exactly one item."
+  else
+    items_json="$(bw list items --session "$BW_SESSION" 2>/dev/null || true)"
+    [ -n "$items_json" ] \
+      || bw_fail "'bw list items' returned nothing — vault empty, or BW_SESSION stale?" \
+           "(If you exported BW_SESSION yourself, unset it and retry.)"
+    # `|| bw_fail`: under set -e a jq parse failure (bw emitting non-JSON)
+    # would otherwise kill the script here with no message at all — the
+    # exact silent-death shape from the CLAUDE.md pipefail gotcha.
+    matches="$(printf '%s' "$items_json" | jq \
+      '[.[] | select(((.fields // []) | map(.name)) as $n
+                     | ($n | index("app-id")) and ($n | index("private-key-b64")))]')" \
+      || bw_fail "'bw list items' returned unparseable output (not JSON)."
+    match_count="$(printf '%s' "$matches" | jq 'length')"
+    case "$match_count" in
+      0)
+        bw_fail "No vault item found with both 'app-id' and 'private-key-b64' custom fields." \
+          "Create one: two custom TEXT fields on a single item —" \
+          "  app-id           the numeric GitHub App ID" \
+          "  private-key-b64  base64 of the App key (base64 -w0 private-key.pem)"
+        ;;
+      1)
+        item_json="$(printf '%s' "$matches" | jq '.[0]')"
+        ;;
+      *)
+        echo "    Ambiguous — $match_count vault items carry both fields:" >&2
+        printf '%s' "$matches" | jq -r '.[] | "      - \(.name)"' >&2
+        bw_fail "Multiple vault items match discovery." \
+          "Set BW_GITHUB_APP_ITEM_ID (in devcontainer.json containerEnv) to" \
+          "one of the names above to disambiguate."
+        ;;
+    esac
+  fi
+
+  # --- Extract, validate, persist -------------------------------------------
+  if printf '%s' "$item_json" \
+         | jq -r '.fields[] | select(.name=="private-key-b64") | .value' \
+         | base64 -d > "$GITHUB_APP_DIR/private-key.pem" 2>/dev/null \
+      && printf '%s' "$item_json" \
+         | jq -r '.fields[] | select(.name=="app-id") | .value' \
+         > "$GITHUB_APP_DIR/app-id" \
+      && [ -s "$GITHUB_APP_DIR/private-key.pem" ] && [ -s "$GITHUB_APP_DIR/app-id" ]; then
+    # Catch a syntactically-valid base64 blob that isn't actually a key
+    # (wrong field contents) before it becomes a cryptic JWT-signing error.
+    if command -v openssl >/dev/null 2>&1 \
+        && ! openssl pkey -noout -in "$GITHUB_APP_DIR/private-key.pem" >/dev/null 2>&1; then
+      rm -f "$GITHUB_APP_DIR/private-key.pem" "$GITHUB_APP_DIR/app-id"
+      bw_fail "Fetched 'private-key-b64' does not decode to a valid private key." \
+        "Re-create the field with: base64 -w0 private-key.pem"
     fi
-    if [ -n "$BW_SESSION" ]; then
-      item_json="$(bw get item "$BW_GITHUB_APP_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
-      if [ -n "$item_json" ] \
-          && printf '%s' "$item_json" \
-               | jq -r '.fields[] | select(.name=="private-key-b64") | .value' \
-               | base64 -d > "$GITHUB_APP_DIR/private-key.pem" \
-          && printf '%s' "$item_json" \
-               | jq -r '.fields[] | select(.name=="app-id") | .value' \
-               > "$GITHUB_APP_DIR/app-id" \
-          && [ -s "$GITHUB_APP_DIR/private-key.pem" ] && [ -s "$GITHUB_APP_DIR/app-id" ]; then
-        chmod 600 "$GITHUB_APP_DIR/private-key.pem"
-        echo "    GitHub App credentials fetched from Bitwarden."
-      else
-        rm -f "$GITHUB_APP_DIR/private-key.pem" "$GITHUB_APP_DIR/app-id"
-        echo "WARNING: Bitwarden fetch failed — see manual checklist below."
-      fi
-      # Only lock the session back up if we're the ones who unlocked it —
-      # reusing a caller-provided BW_SESSION means they're managing its
-      # lifecycle, not us.
-      if [ "$bw_unlocked_by_us" = true ]; then
-        bw lock >/dev/null 2>&1 || true
-      fi
-    else
-      echo "WARNING: Bitwarden unlock failed — see manual checklist below."
-    fi
+    chmod 600 "$GITHUB_APP_DIR/private-key.pem"
+    echo "    GitHub App credentials fetched from Bitwarden item: $(printf '%s' "$item_json" | jq -r '.name')"
+  else
+    rm -f "$GITHUB_APP_DIR/private-key.pem" "$GITHUB_APP_DIR/app-id"
+    bw_fail "Vault item found but extracting/decoding its fields failed." \
+      "Check that 'app-id' and 'private-key-b64' are custom TEXT fields with" \
+      "the right contents (private-key-b64 = base64 -w0 private-key.pem)."
   fi
 fi
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v bw >/dev/null 2>&1 \
@@ -168,6 +254,13 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v bw >/dev/null 2>&1 \
   CLAUDE_CODE_OAUTH_TOKEN="$(bw get notes "$BW_CLAUDE_TOKEN_ITEM_ID" --session "$BW_SESSION" 2>/dev/null || true)"
   [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN \
     && echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden."
+fi
+# Lock the vault back up only if we unlocked it — a caller-provided
+# BW_SESSION means they manage its lifecycle. Done here (not right after the
+# key fetch) so the CLAUDE_CODE_OAUTH_TOKEN fetch above can reuse the same
+# unlock — locking earlier would invalidate the session it depends on.
+if [ "${bw_unlocked_by_us:-false}" = true ]; then
+  bw lock >/dev/null 2>&1 || true
 fi
 
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
@@ -273,19 +366,14 @@ echo "   re-entry. See README.md."
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "   -> CLAUDE_CODE_OAUTH_TOKEN detected, already preconfigured this run."
 fi
-if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
-  echo "2. GitHub App credentials: not found (and no BW_GITHUB_APP_ITEM_ID set, or"
-  echo "   Bitwarden fetch failed above). Only needed once, and only after a"
-  echo "   'dc nuke' (a plain rebuild keeps them). Either:"
-  echo "     a) set BW_GITHUB_APP_ITEM_ID to a Bitwarden item with custom text"
-  echo "        fields 'app-id' and 'private-key-b64' (private-key.pem run"
-  echo "        through 'base64 -w0'), or"
-  echo "     b) drop it in manually:"
-  echo "          printf '%s\n' '<APP_ID>' > ~/.config/github-app/app-id"
-  echo "          cp /path/to/private-key.pem ~/.config/github-app/private-key.pem"
-  echo "          chmod 600 ~/.config/github-app/private-key.pem"
-else
+# A missing key would have aborted the script above (bw_fail) — reaching
+# this line means the credentials are in the volume. Keep the check anyway
+# as a cheap invariant guard.
+if [ -r "$GITHUB_APP_DIR/private-key.pem" ] && [ -r "$GITHUB_APP_DIR/app-id" ]; then
   echo "2. GitHub App credentials: present."
+else
+  echo "2. GitHub App credentials: MISSING despite setup completing — this is a"
+  echo "   bug; re-run ./.devcontainer/dc setup and watch the Bitwarden step."
 fi
 echo "3. Codex CLI auth: run 'codex' once, follow its ChatGPT/API-key login."
 echo "4. Do NOT run 'gh auth login' or 'gh auth setup-git' — this container"

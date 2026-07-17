@@ -10,6 +10,9 @@
 #
 #   ./.devcontainer/dc up        build + start the container (runs postCreate)
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
+#   ./.devcontainer/dc setup     re-run setup-agents.sh inside the running
+#                                  container (retry after a failed Bitwarden
+#                                  unlock / postCreate, no rebuild needed)
 #   ./.devcontainer/dc exec ...   run a one-off command inside
 #   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
@@ -70,6 +73,14 @@ case "$cmd" in
     ;;
   shell)
     devcontainer exec --workspace-folder "$ROOT" bash
+    ;;
+  setup)
+    # Recovery path: postCreate runs only once per container create, so a
+    # failed setup (wrong Bitwarden password, network down) would otherwise
+    # force a full rebuild. This re-runs it in place — the script is
+    # idempotent, and `devcontainer exec` attaches an interactive terminal,
+    # which the Bitwarden unlock prompts need.
+    devcontainer exec --workspace-folder "$ROOT" /opt/agent-devcontainer/setup-agents.sh
     ;;
   exec)
     devcontainer exec --workspace-folder "$ROOT" "$@"
