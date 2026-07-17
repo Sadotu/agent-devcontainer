@@ -36,6 +36,35 @@ When running **inside the container** (workspace mounted at
   into it. `sudo` is blocked by `no-new-privileges`, so there's no in-container
   workaround. Fixed by adding `$HOME/.config/github-app` to the chown list
   (setup-agents.sh line ~12).
+- `dc` is host-side (invokes `devcontainer up` to *create* the container in
+  the first place) — it cannot be baked into the shared image like the
+  other `.devcontainer/` scripts, chicken-and-egg. It stays a small
+  per-project file, same tier as `devcontainer.json`.
+- `set -eo pipefail` + a pipeline ending in `grep` that legitimately finds
+  no match (e.g. parsing a session key out of CLI output when auth failed)
+  kills the whole script immediately via `set -e` — silently, no error
+  surfaced, script just stops. `grep`'s exit 1 ("no lines matched") counts
+  as pipefail's rightmost-nonzero even when every other stage in the pipe
+  succeeds. Any pipeline whose "not found" case is expected/handled needs
+  an explicit `|| true` on the whole thing, not just on the final
+  assignment — see the `BW_SESSION` extraction in `setup-agents.sh` for two
+  bugs of this exact shape hit back to back.
+- `bw login --raw` does **not** suppress the interactive success banner
+  the way `bw unlock --raw` does — contradicts what the flag name implies,
+  and isn't obvious from the docs. `bw login`'s banner still prints in
+  full ("You are logged in!\n\nTo unlock your vault, set your session
+  key..."), so capture and parse the session key out of that text instead
+  of trusting `--raw`'s output shape for `login`. Also strip ANSI escape
+  codes before parsing — `bw` can still emit color codes even when piped
+  (invisible in a real terminal, present in the raw captured bytes) unless
+  `NO_COLOR=1 FORCE_COLOR=0` is set.
+- `dotagents` (skill distribution, see `.devcontainer/agents.toml`) only
+  resolves a bare `name` + `source = "owner/repo"` entry against a
+  `skills/<name>/` subdirectory in the source repo — a skill directory
+  sitting at the source repo's root won't be found without an explicit
+  `path` field. Its YAML frontmatter parser also rejects an unquoted
+  `description:` value containing a mid-string `: ` (colon+space) — quote
+  the value. Both hit migrating `github-issue` into `Sadotu/agent-skills`.
 
 ### GitHub App auth
 
