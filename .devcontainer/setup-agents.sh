@@ -95,10 +95,19 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
     bw_unlocked_by_us=false
     if [ -n "${BW_SESSION:-}" ]; then
       echo "    Reusing existing BW_SESSION from environment."
+    elif bw login --check >/dev/null 2>&1; then
+      # Already logged in (this container's HOME volume kept the login
+      # state from a prior run) — just needs unlocking.
+      echo "    Bitwarden already logged in — unlocking (interactive)..."
+      BW_SESSION="$(bw unlock --raw || true)"
+      bw_unlocked_by_us=true
     else
-      echo "    Unlocking Bitwarden (interactive — one-time per container)..."
-      bw login --check >/dev/null 2>&1 || bw login || true
-      BW_SESSION="$(bw unlock --raw 2>/dev/null || true)"
+      # A successful `bw login` already unlocks the vault as part of
+      # authenticating — no separate `bw unlock` needed (and calling one
+      # anyway means a second, easy-to-miss master-password prompt).
+      # --raw suppresses the banner text so stdout is just the session key.
+      echo "    Logging into Bitwarden (interactive — one-time per container)..."
+      BW_SESSION="$(bw login --raw || true)"
       bw_unlocked_by_us=true
     fi
     if [ -n "$BW_SESSION" ]; then
