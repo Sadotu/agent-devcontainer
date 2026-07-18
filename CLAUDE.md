@@ -95,6 +95,24 @@ When running **inside the container** (workspace mounted at
   `path` field. Its YAML frontmatter parser also rejects an unquoted
   `description:` value containing a mid-string `: ` (colon+space) — quote
   the value. Both hit migrating `github-issue` into `Sadotu/agent-skills`.
+- Bitwarden auto-login (`setup-agents.sh`): the GitHub App key, the Claude
+  OAuth token, and the Codex auth each need the vault unlocked, but only ONE
+  unlock should happen. They call a shared idempotent `ensure_bw_session`
+  (`fatal` for the required App key, `besteffort` for the two seeds) —
+  DON'T re-inline a per-consumer unlock or gate a seed on `BW_SESSION`. The
+  original bug did exactly that: seeds gated on `BW_SESSION`, which was only
+  set inside the App-key-missing branch, so on any rebuild where the App key
+  was already in its volume the vault never unlocked and both seeds silently
+  no-op'd.
+- The fetched Claude OAuth token is persisted to `~/.claude/oauth-env`
+  (chmod 600, on the persisted `~/.claude` volume) and sourced from
+  `.bashrc` — an in-script `export` alone dies with the setup process and
+  never reaches the interactive `claude`. Consequence: rotating the token in
+  Bitwarden does NOT propagate on the next rebuild, because the seed skips
+  when `oauth-env` already exists (that skip is what keeps rebuilds
+  headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
+  `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
+  self-renews via its refresh token, so it doesn't need this.
 
 ### GitHub App auth
 
