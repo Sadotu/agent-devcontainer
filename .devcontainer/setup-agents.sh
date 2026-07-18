@@ -57,6 +57,18 @@ alias cx-auto='codex --sandbox danger-full-access --ask-for-approval never'
 EOF
 fi
 
+# Source the persisted Claude OAuth token into interactive shells. The setup
+# script's own `export` dies with its process; this file (written on the
+# persisted ~/.claude volume when the token is seeded from Bitwarden) is what
+# actually makes `claude` authenticated in the terminal the user runs.
+if ! grep -q "# --- agent-devcontainer claude oauth env ---" "$BASHRC"; then
+  cat >> "$BASHRC" <<'EOF'
+
+# --- agent-devcontainer claude oauth env ---
+[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r "$HOME/.claude/oauth-env" ] && . "$HOME/.claude/oauth-env"
+EOF
+fi
+
 echo "==> Shared skills location"
 mkdir -p "$WORKSPACE/.agents/skills"
 
@@ -113,77 +125,95 @@ bw_fail() {
   exit 1
 }
 
-if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
-  command -v bw >/dev/null 2>&1 \
-    || bw_fail "Bitwarden CLI (bw) not found in the image — cannot fetch the GitHub App key."
-  bw_unlocked_by_us=false
+# Idempotent Bitwarden unlock. Sets the global BW_SESSION (and marks
+# bw_unlocked_by_us so the tail can re-lock). Every consumer that needs the
+# vault — the GitHub App key, the Claude token, the Codex auth — calls this,
+# so the unlock is DECOUPLED from any single consumer. Previously the unlock
+# lived inside the "App key missing" branch, so on a rebuild where that key
+# was already in its persisted volume the vault was never unlocked and the
+# Claude/Codex seeds silently no-op'd.
+#
+#   ensure_bw_session fatal       — unrecoverable failure aborts via bw_fail
+#   ensure_bw_session besteffort  — failure just warns and returns 1
+#
+# Returns 0 with BW_SESSION set on success.
+bw_unlocked_by_us=false
+bw_session_announced=false
+ensure_bw_session() {
+  local mode="$1"
   if [ -n "${BW_SESSION:-}" ]; then
-    echo "    Reusing existing BW_SESSION from environment."
-  else
-    # `--raw` does NOT suppress the success banner for either `login` or
-    # `unlock`, so parse the session key out of that banner instead of
-    # trusting --raw's output shape. `tee` keeps the interactive prompts
-    # (email/master password/OTP) visible in real time while still capturing
-    # the full output for parsing — stdin is untouched by piping stdout, so
-    # input still works normally.
-    # NO_COLOR/FORCE_COLOR=0: bw may emit ANSI codes even when stdout isn't
-    # a TTY (piped into tee below) — invisible on screen but present in the
-    # bytes we parse, breaking the quote-delimited regex match.
-    # Wrong-password is the common failure, so it retries (3 attempts);
-    # network-down and no-terminal failures are fatal immediately — retrying
-    # those re-prompts into the void.
-    bw_attempt=1
-    while :; do
-      bw_log="$(mktemp)"
-      if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
-        # Already logged in (login state persisted from a prior run in this
-        # container) — just needs unlocking.
-        echo "    Bitwarden already logged in — unlocking (interactive)..."
-        NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
-      else
-        # A successful `bw login` already unlocks the vault as part of
-        # authenticating — no separate `bw unlock` needed.
-        echo "    Logging into Bitwarden (interactive — one-time per container)..."
-        NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
-      fi
-      # Strip ANSI escapes before parsing. `|| true` guards the whole
-      # pipeline: under `set -eo pipefail`, grep finding no match (the
-      # expected outcome on a failed login) would otherwise kill the script
-      # right here via set -e (see gotchas in CLAUDE.md).
-      BW_SESSION="$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$bw_log" \
-        | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2 || true)"
-      if [ -n "$BW_SESSION" ]; then
-        rm -f "$bw_log"
-        bw_unlocked_by_us=true
-        break
-      fi
-      # No session — classify the failure from bw's own output.
-      if grep -qiE 'ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network error|cannot connect|failed to fetch' "$bw_log"; then
-        rm -f "$bw_log"
-        bw_fail "Cannot reach Bitwarden — network problem (see output above)." \
-          "Check the container's network / VPN / Bitwarden server status."
-      fi
-      if grep -qiE 'incorrect|invalid master password' "$bw_log"; then
-        rm -f "$bw_log"
-        if [ "$bw_attempt" -ge 3 ]; then
-          bw_fail "Bitwarden login/unlock failed after 3 attempts (wrong master password?)."
-        fi
-        bw_attempt=$((bw_attempt + 1))
-        echo "    Wrong credentials — retrying (attempt $bw_attempt/3)..."
-        continue
-      fi
-      # Neither a session nor a recognizable error: most likely bw never got
-      # an interactive terminal to prompt on (e.g. VS Code "Rebuild
-      # Container" runs postCreate without stdin). Dump the log for
-      # diagnosis and point at the interactive re-run path.
-      echo "    DEBUG: could not find a session key in bw's output — raw log:"
-      sed 's/^/    | /' "$bw_log"
-      rm -f "$bw_log"
-      bw_fail "Bitwarden login produced no session and no recognizable error." \
-        "If this setup ran non-interactively (VS Code rebuild), run it from" \
-        "a terminal instead — that's what 'dc setup' below is for."
-    done
+    if [ "$bw_session_announced" != true ]; then
+      echo "    Reusing existing BW_SESSION."
+      bw_session_announced=true
+    fi
+    return 0
   fi
+  if ! command -v bw >/dev/null 2>&1; then
+    [ "$mode" = fatal ] && bw_fail "Bitwarden CLI (bw) not found in the image — cannot fetch the GitHub App key."
+    echo "    WARN: Bitwarden CLI (bw) not found — skipping best-effort seed." >&2
+    return 1
+  fi
+  local bw_attempt=1 bw_log
+  while :; do
+    bw_log="$(mktemp)"
+    if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
+      # Already logged in (login state persisted from a prior run in this
+      # container) — just needs unlocking.
+      echo "    Bitwarden already logged in — unlocking (interactive)..."
+      NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
+    else
+      # A successful `bw login` already unlocks the vault as part of
+      # authenticating — no separate `bw unlock` needed.
+      echo "    Logging into Bitwarden (interactive — one-time per container)..."
+      NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
+    fi
+    # Strip ANSI escapes before parsing. `|| true` guards the whole pipeline:
+    # under `set -eo pipefail`, grep finding no match (the expected outcome on
+    # a failed login) would otherwise kill the script here (see CLAUDE.md).
+    BW_SESSION="$(sed -E 's/\x1b\[[0-9;]*[a-zA-Z]//g' "$bw_log" \
+      | grep -oE 'BW_SESSION="[^"]*"' | head -1 | cut -d'"' -f2 || true)"
+    if [ -n "$BW_SESSION" ]; then
+      rm -f "$bw_log"
+      bw_unlocked_by_us=true
+      bw_session_announced=true
+      return 0
+    fi
+    # No session — classify the failure from bw's own output.
+    if grep -qiE 'ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network error|cannot connect|failed to fetch' "$bw_log"; then
+      rm -f "$bw_log"
+      [ "$mode" = fatal ] && bw_fail "Cannot reach Bitwarden — network problem (see output above)." \
+        "Check the container's network / VPN / Bitwarden server status."
+      echo "    WARN: cannot reach Bitwarden (network) — skipping best-effort seed." >&2
+      return 1
+    fi
+    if grep -qiE 'incorrect|invalid master password' "$bw_log"; then
+      rm -f "$bw_log"
+      if [ "$bw_attempt" -ge 3 ]; then
+        [ "$mode" = fatal ] && bw_fail "Bitwarden login/unlock failed after 3 attempts (wrong master password?)."
+        echo "    WARN: Bitwarden unlock failed (wrong master password) — skipping best-effort seed." >&2
+        return 1
+      fi
+      bw_attempt=$((bw_attempt + 1))
+      echo "    Wrong credentials — retrying (attempt $bw_attempt/3)..."
+      continue
+    fi
+    # Neither a session nor a recognizable error: most likely bw never got an
+    # interactive terminal to prompt on (e.g. VS Code "Rebuild Container" runs
+    # postCreate without stdin). Dump the log for diagnosis.
+    echo "    DEBUG: could not find a session key in bw's output — raw log:"
+    sed 's/^/    | /' "$bw_log"
+    rm -f "$bw_log"
+    [ "$mode" = fatal ] && bw_fail "Bitwarden login produced no session and no recognizable error." \
+      "If this setup ran non-interactively (VS Code rebuild), run it from" \
+      "a terminal instead — that's what 'dc setup' below is for."
+    echo "    WARN: Bitwarden not available non-interactively — skipping best-effort seed." >&2
+    return 1
+  done
+}
+
+if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
+  # The App key is REQUIRED, so unlock is fatal-on-failure here.
+  ensure_bw_session fatal
 
   # --- Item selection: explicit override, or discovery by custom fields ------
   if [ -n "${BW_GITHUB_APP_ITEM_ID:-}" ]; then
@@ -250,27 +280,45 @@ if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id"
   fi
 fi
 # --- Claude Code OAuth token (best-effort) -----------------------------------
-# Only runs when the host didn't already forward a token AND the vault is
-# unlocked (BW_SESSION is set by the GitHub App fetch above, which only unlocks
-# when that key isn't already in its volume). NOT fatal if absent — the token
-# may arrive via the host env, or `claude` may already be logged in from the
-# persisted ~/.claude volume.
+# Seed the token from Bitwarden so `claude` works headless. Independent of the
+# GitHub App fetch above: this calls ensure_bw_session itself, so it seeds even
+# on a rebuild where the App key was already in its persisted volume (the old
+# code gated on BW_SESSION and silently skipped in that case).
+#
+# Persistence matters: an in-script `export` dies with this process, so the
+# interactive shell — the `claude` the user actually runs — would never see it.
+# We write it to $HOME/.claude/oauth-env (on the persisted ~/.claude volume)
+# and source that from .bashrc (below). That also makes subsequent rebuilds
+# headless: the file is already present, so no master-password re-prompt.
+#
+# Precedence: a host-forwarded CLAUDE_CODE_OAUTH_TOKEN (devcontainer.json
+# localEnv) wins and needs no seeding; an already-persisted oauth-env means
+# we're done. Only an empty env AND a missing file triggers a Bitwarden fetch.
 #
 # Stored as the Notes of a well-known vault item named 'claude-code-oauth-token'
 # (Notes body = the `claude setup-token` output). BW_CLAUDE_TOKEN_ITEM_ID
 # overrides that item name (accepts a name or GUID).
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v bw >/dev/null 2>&1 \
-    && [ -n "${BW_SESSION:-}" ]; then
-  claude_item="${BW_CLAUDE_TOKEN_ITEM_ID:-claude-code-oauth-token}"
-  # `bw get notes` prints only the Notes body; strip newlines so the exported
-  # token is exactly the stored one-line string.
-  CLAUDE_CODE_OAUTH_TOKEN="$(bw get notes "$claude_item" --session "$BW_SESSION" 2>/dev/null | tr -d '\r\n' || true)"
-  if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-    export CLAUDE_CODE_OAUTH_TOKEN
-    echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden item '$claude_item'."
-  else
-    echo "    (No '$claude_item' notes in vault — relying on host env or the persisted ~/.claude login.)"
+CLAUDE_OAUTH_ENV="$HOME/.claude/oauth-env"
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -r "$CLAUDE_OAUTH_ENV" ]; then
+  if ensure_bw_session besteffort; then
+    claude_item="${BW_CLAUDE_TOKEN_ITEM_ID:-claude-code-oauth-token}"
+    # `bw get notes` prints only the Notes body; strip newlines so the stored
+    # token is exactly the one-line string.
+    claude_token="$(bw get notes "$claude_item" --session "$BW_SESSION" 2>/dev/null | tr -d '\r\n' || true)"
+    if [ -n "$claude_token" ]; then
+      mkdir -p "$HOME/.claude"
+      ( umask 077; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$claude_token" > "$CLAUDE_OAUTH_ENV" )
+      chmod 600 "$CLAUDE_OAUTH_ENV"
+      echo "    CLAUDE_CODE_OAUTH_TOKEN fetched from Bitwarden item '$claude_item' and persisted to ~/.claude/oauth-env."
+    else
+      echo "    (No '$claude_item' notes in vault — relying on host env or the persisted ~/.claude login.)"
+    fi
   fi
+fi
+# Make the token available to THIS setup process too — the `claude plugin`
+# installs further down authenticate with it.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r "$CLAUDE_OAUTH_ENV" ]; then
+  . "$CLAUDE_OAUTH_ENV"
 fi
 # --- Codex CLI auth (best-effort, subscription) ------------------------------
 # Same rationale as the Claude token: seed it once from Bitwarden so `codex`
@@ -278,8 +326,10 @@ fi
 # keeps its ChatGPT subscription login in ~/.codex/auth.json (access + refresh
 # tokens); once present it auto-refreshes that file in place, and the persisted
 # ~/.codex volume carries it across rebuilds. So only seed when the file is
-# absent (fresh volume) and the vault is unlocked. NOT fatal — if it's missing,
-# `codex login --device-auth` remains the manual fallback.
+# absent (fresh volume). Like the Claude token, this calls ensure_bw_session
+# itself rather than depending on the App fetch having unlocked the vault.
+# NOT fatal — if it's missing, `codex login --device-auth` remains the manual
+# fallback.
 #
 # Stored as the Notes of a well-known vault item named 'codex-auth-token'
 # (Notes body = a working ~/.codex/auth.json, produced by `codex login` on any
@@ -287,8 +337,7 @@ fi
 # over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
 # the item name (name or GUID).
 CODEX_AUTH="$HOME/.codex/auth.json"
-if [ ! -r "$CODEX_AUTH" ] && command -v bw >/dev/null 2>&1 \
-    && [ -n "${BW_SESSION:-}" ]; then
+if [ ! -r "$CODEX_AUTH" ] && ensure_bw_session besteffort; then
   codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
   codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
   if [ -n "$codex_notes" ]; then

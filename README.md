@@ -167,12 +167,15 @@ long-lived token instead:
 Alternatively, store the token in Bitwarden — no host-side env needed. Create a
 vault item **named** `claude-code-oauth-token` and paste the `claude setup-token`
 output into its **Notes**. When `CLAUDE_CODE_OAUTH_TOKEN` isn't already forwarded
-from the host, `setup-agents.sh` reads that item's Notes by name during the same
-Bitwarden unlock it uses for the App key. To use a different item name, set
-`BW_CLAUDE_TOKEN_ITEM_ID=<item name or GUID>` in `devcontainer.json`'s
-`containerEnv`. This fetch only fires when that unlock runs (i.e. when the GitHub
-App key isn't yet in its volume); once `claude` has logged in, the login state
-itself persists in the `~/.claude` volume across rebuilds.
+from the host, `setup-agents.sh` reads that item's Notes by name and writes the
+token to `~/.claude/oauth-env` (on the persisted `~/.claude` volume), which the
+container's `.bashrc` sources so every interactive `claude` picks it up. To use a
+different item name, set `BW_CLAUDE_TOKEN_ITEM_ID=<item name or GUID>` in
+`devcontainer.json`'s `containerEnv`. The fetch is independent of the GitHub App
+key fetch — it triggers its own Bitwarden unlock when needed — so it works even
+on a rebuild where the App key is already in its volume. Once `~/.claude/oauth-env`
+exists it's reused across rebuilds with no further unlock prompt; delete it (or
+`dc wipe-volumes`) to force a re-fetch after rotating the token.
 
 ## Repository access (GitHub App)
 
