@@ -320,6 +320,16 @@ fi
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r "$CLAUDE_OAUTH_ENV" ]; then
   . "$CLAUDE_OAUTH_ENV"
 fi
+# Interactive Claude's first-run wizard still demands a login choice even when
+# CLAUDE_CODE_OAUTH_TOKEN is set — only headless (-p) mode honors the token
+# without onboarding. The wizard's state lives in ~/.claude.json, which sits at
+# $HOME root, OUTSIDE the persisted ~/.claude volume, so every rebuild wipes it
+# and re-triggers the login screen. Seed the onboarding flag whenever a token
+# is present so `claude` boots straight to the main UI, authed via the env var.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -s "$HOME/.claude.json" ]; then
+  printf '{"hasCompletedOnboarding": true}\n' > "$HOME/.claude.json"
+  echo "    Seeded ~/.claude.json onboarding flag (skips interactive login wizard)."
+fi
 # --- Codex CLI auth (best-effort, subscription) ------------------------------
 # Same rationale as the Claude token: seed it once from Bitwarden so `codex`
 # works headless, with no interactive `codex login --device-auth` step. Codex
