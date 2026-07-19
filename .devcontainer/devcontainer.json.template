@@ -8,7 +8,8 @@
     "source=__PROJECT_NAME__-codex-config,target=/home/vscode/.codex,type=volume",
     "source=__PROJECT_NAME__-gh-config,target=/home/vscode/.config/gh,type=volume",
     "source=__PROJECT_NAME__-github-app-config,target=/home/vscode/.config/github-app,type=volume",
-    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
+    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume",
+    "source=__PROJECT_NAME__-usage-sentinel,target=/home/vscode/.local/share/usage-sentinel,type=volume"
   ],
   "remoteUser": "vscode",
   "runArgs": ["--init", "--security-opt", "no-new-privileges"],
@@ -17,9 +18,11 @@
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
     "PROJECT_NAME": "__PROJECT_NAME__",
     "GH_OWNER": "__GH_OWNER__",
-    "APP_ID": "__APP_ID__"
+    "APP_ID": "__APP_ID__",
+    "INSTALL_USAGE_SENTINEL": "1"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/agent-devcontainer/usage-sentinel.sh",
   "customizations": {
     "vscode": { "extensions": ["anthropic.claude-code", "dbaeumer.vscode-eslint"] }
   }

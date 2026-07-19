@@ -20,9 +20,14 @@ RUN export DEBIAN_FRONTEND=noninteractive \
         gnupg \
         jq \
         ripgrep \
+        tmux \
         unzip \
         zip \
     && rm -rf /var/lib/apt/lists/*
+# tmux is baked (not runtime-optional): it installs via apt, which needs root,
+# and runArgs' --security-opt no-new-privileges disables sudo at runtime. It is
+# a hard dependency of the (future) issue-orchestrator tool, which spawns one
+# tmux window per issue.
 
 # Node.js 22 LTS — required by all three agent CLIs
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -59,19 +64,22 @@ RUN npm install -g \
 # no-new-privileges, which disables sudo entirely.
 RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
         /home/vscode/.config/gh /home/vscode/.config/github-app /home/vscode/.history \
+        /home/vscode/.local/share/usage-sentinel \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex \
-        /home/vscode/.config /home/vscode/.history
+        /home/vscode/.config /home/vscode/.history /home/vscode/.local
 
 # Devcontainer tooling shared by every project — postCreateCommand in each
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
+        usage-sentinel.sh \
         /opt/agent-devcontainer/
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
 RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
+        /opt/agent-devcontainer/usage-sentinel.sh \
         /opt/agent-devcontainer/githooks/pre-push
 
 # Project scaffolder + the two per-project files it emits.

@@ -10,7 +10,8 @@
     "source=agent-devcontainer-dev-codex-config,target=/home/vscode/.codex,type=volume",
     "source=agent-devcontainer-dev-gh-config,target=/home/vscode/.config/gh,type=volume",
     "source=agent-devcontainer-dev-github-app-config,target=/home/vscode/.config/github-app,type=volume",
-    "source=agent-devcontainer-dev-shell-history,target=/home/vscode/.history,type=volume"
+    "source=agent-devcontainer-dev-shell-history,target=/home/vscode/.history,type=volume",
+    "source=agent-devcontainer-dev-usage-sentinel,target=/home/vscode/.local/share/usage-sentinel,type=volume"
   ],
   "remoteUser": "vscode",
   "runArgs": [
@@ -23,9 +24,11 @@
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
     "PROJECT_NAME": "agent-devcontainer",
     "GH_OWNER": "Sadotu",
-    "APP_ID": "4217970"
+    "APP_ID": "4217970",
+    "INSTALL_USAGE_SENTINEL": "1"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/agent-devcontainer/usage-sentinel.sh",
   "customizations": {
     "vscode": {
       "extensions": [

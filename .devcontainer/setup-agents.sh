@@ -465,6 +465,13 @@ else
   echo "         $WORKSPACE/.agents/skills/caveman and $WORKSPACE/AGENTS.md"
 fi
 
+echo "==> Optional tool: usage-sentinel"
+# Gated on INSTALL_USAGE_SENTINEL (default on). Heavy clone+build happens here
+# the first time; the same script is also wired as postStartCommand so the
+# service comes back after a plain container restart. Non-fatal: a failure to
+# clone/build/start the optional tool must never abort setup (set -e is on).
+bash "$TOOLDIR/usage-sentinel.sh" || echo "WARNING: usage-sentinel setup failed (non-fatal)."
+
 echo "==> Done."
 echo ""
 echo "=== Manual checklist (not scriptable) ==="

@@ -304,6 +304,30 @@ Three distribution paths, depending on what the skill is:
   put it in that project's own `.agents/skills/`. No need to route it through
   `agent-skills` or this image.
 
+## Optional tools
+
+Extra tooling beyond the agent CLIs, installed at runtime and toggled per
+project via `containerEnv` in `devcontainer.json`.
+
+- **tmux** — baked into the image unconditionally (it installs via `apt`,
+  which needs root, and `--security-opt no-new-privileges` disables `sudo` at
+  runtime, so it can't be a runtime toggle). Prerequisite for the future
+  `issue-orchestrator` tool.
+- **usage-sentinel** ([`Sadotu/usage-sentinel`](https://github.com/Sadotu/usage-sentinel))
+  — a local service that reads the Claude/Codex credential files (read-only)
+  and exposes rolling-usage percentages at `http://127.0.0.1:4317`. Cloned and
+  built once into a persisted volume (`<project>-usage-sentinel`), then started
+  in the background. `setup-agents.sh` does the first-run clone+build;
+  `postStartCommand` re-launches it after a plain container restart. **Default
+  on** — set `INSTALL_USAGE_SENTINEL: "0"` in `containerEnv` to skip it.
+  - To refresh the checkout after upstream changes, delete the volume
+    (`dc wipe-volumes`) or `rm -rf ~/.local/share/usage-sentinel/repo` and
+    rebuild — the clone is skipped while the checkout exists (headless-rebuild
+    philosophy, same as `~/.claude/oauth-env`).
+  - Caveat: in-container Claude auth is a token (`~/.claude/oauth-env`), not
+    `~/.claude/.credentials.json`, so the sentinel may report Claude as
+    `unauthenticated` while Codex reports normally.
+
 ## Working on issues safely
 
 1. `git checkout -b agent/<issue-number>-<short-description>`

@@ -113,6 +113,19 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
+- Optional tools (`usage-sentinel.sh`): `usage-sentinel`'s `dist/` is
+  gitignored upstream, so a fresh clone has NO build output — it must be built
+  once (`npm install` pulls only devDeps like `tsc`; there are zero runtime
+  deps). The checkout lives on the persisted `<project>-usage-sentinel` volume
+  and is skipped once present (headless-rebuild philosophy, like `oauth-env`);
+  wipe the volume / `rm -rf ~/.local/share/usage-sentinel/repo` to refresh.
+  The service is wired BOTH from `setup-agents.sh` (postCreate — heavy
+  clone+build, once) and as `postStartCommand` (fast start-if-not-listening) —
+  postCreate does NOT re-run on a plain container restart, only on
+  create/rebuild, so the service would otherwise die on restart. The script is
+  idempotent and always exits 0 (it's a lifecycle command; a nonzero exit is
+  noisy). `tmux` is baked in the Dockerfile, NOT runtime-optional: apt needs
+  root and `no-new-privileges` kills `sudo` at runtime.
 
 ### GitHub App auth
 
