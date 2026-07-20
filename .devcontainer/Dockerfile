@@ -50,7 +50,13 @@ RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @bitwarden/cli \
+        https://github.com/Sadotu/issue-orchestrator/archive/bb48f1c5f54eda3881cec68020524ff83139ee7c.tar.gz \
     && npm cache clean --force
+
+# Explicit user command for issue orchestration. Defining this in Bash startup
+# keeps image build and container startup inert.
+COPY start-work.sh /etc/profile.d/start-work.sh
+RUN printf '\nsource /etc/profile.d/start-work.sh\n' >> /etc/bash.bashrc
 
 # Pre-create mount targets for the persisted config named volumes, owned by
 # vscode. Docker seeds a named volume from the image path's content (incl.
