@@ -44,6 +44,7 @@ source_test() {
     grep -Fq 'SHA-256 6d84b28fddf7f0696105fb7516a7239d643d3179c67161a79e2b6fd3d638259e' "$devcontainer_dir/Dockerfile"
     grep -Fq 'COPY vendor/issue-orchestrator-bb48f1c5f54e.tgz' "$devcontainer_dir/Dockerfile"
     grep -Fq '/opt/agent-devcontainer/vendor/issue-orchestrator-bb48f1c5f54e.tgz' "$devcontainer_dir/Dockerfile"
+    grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
@@ -80,7 +81,13 @@ EOF
 image_test() {
     local image=$1 output status container_id
 
-    docker run --rm "$image" bash -c 'command -v issue-orchestrator >/dev/null'
+    docker run --rm "$image" bash -c '
+        command -v tmux >/dev/null &&
+        command -v gh >/dev/null &&
+        command -v claude >/dev/null &&
+        command -v issue-orchestrator >/dev/null &&
+        test -x /opt/agent-devcontainer/gh-app-token.sh
+    '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 

@@ -20,6 +20,7 @@ RUN export DEBIAN_FRONTEND=noninteractive \
         gnupg \
         jq \
         ripgrep \
+        tmux \
         unzip \
         zip \
     && rm -rf /var/lib/apt/lists/*
