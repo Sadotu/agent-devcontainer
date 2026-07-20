@@ -79,7 +79,7 @@ sentinel_inspect() {
 }
 
 sentinel_compatible() {
-  local image restart network env mounts health_cmd health_interval health_timeout health_retries health_start
+  local image restart network env mounts expected_mounts health_cmd expected_health health_interval health_timeout health_retries health_start
   image="$(sentinel_inspect '{{.Config.Image}}')"
   restart="$(sentinel_inspect '{{.HostConfig.RestartPolicy.Name}}')"
   network="$(sentinel_inspect '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}')"
@@ -90,20 +90,29 @@ sentinel_compatible() {
   health_timeout="$(sentinel_inspect '{{.Config.Healthcheck.Timeout}}')"
   health_retries="$(sentinel_inspect '{{.Config.Healthcheck.Retries}}')"
   health_start="$(sentinel_inspect '{{.Config.Healthcheck.StartPeriod}}')"
+  expected_mounts="$(printf '%s\n' \
+    'usage-sentinel-claude:/var/lib/usage-sentinel/claude' \
+    'usage-sentinel-codex:/var/lib/usage-sentinel/codex' \
+    'usage-sentinel-data:/var/lib/usage-sentinel/data')"
+  expected_health="$(printf 'CMD-SHELL\n%s' "$SENTINEL_HEALTH_CMD")"
 
   [ "$image" = "$SENTINEL_IMAGE" ] &&
     [ "$restart" = "unless-stopped" ] &&
     grep -Fxq "$SENTINEL_NETWORK" <<<"$network" &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_HOST=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_DATA_DIR=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_CODEX_MANAGED_REFRESH=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^CLAUDE_CONFIG_DIR=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^CODEX_HOME=' <<<"$env")" = 1 ] &&
     grep -Fxq 'USAGE_SENTINEL_HOST=0.0.0.0' <<<"$env" &&
     grep -Fxq 'USAGE_SENTINEL_DATA_DIR=/var/lib/usage-sentinel/data' <<<"$env" &&
     grep -Fxq 'USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=true' <<<"$env" &&
     grep -Fxq 'USAGE_SENTINEL_CODEX_MANAGED_REFRESH=true' <<<"$env" &&
     grep -Fxq 'CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude' <<<"$env" &&
     grep -Fxq 'CODEX_HOME=/var/lib/usage-sentinel/codex' <<<"$env" &&
-    grep -Fxq 'usage-sentinel-data:/var/lib/usage-sentinel/data' <<<"$mounts" &&
-    grep -Fxq 'usage-sentinel-claude:/var/lib/usage-sentinel/claude' <<<"$mounts" &&
-    grep -Fxq 'usage-sentinel-codex:/var/lib/usage-sentinel/codex' <<<"$mounts" &&
-    grep -Fxq "$SENTINEL_HEALTH_CMD" <<<"$health_cmd" &&
+    [ "$(sort <<<"$mounts")" = "$expected_mounts" ] &&
+    [ "$health_cmd" = "$expected_health" ] &&
     [ "$health_interval" = 30s ] && [ "$health_timeout" = 5s ] &&
     [ "$health_retries" = 3 ] && [ "$health_start" = 10s ]
 }

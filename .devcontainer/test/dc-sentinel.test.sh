@@ -42,14 +42,23 @@ USAGE_SENTINEL_CODEX_MANAGED_REFRESH=true
 CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude
 CODEX_HOME=/var/lib/usage-sentinel/codex
 ENV
+        [ "$FAKE_SCENARIO" != duplicate_env ] || echo 'CODEX_HOME=/tmp/override'
         ;;
       *Mounts*)
         printf '%s\n' \
           'usage-sentinel-data:/var/lib/usage-sentinel/data' \
           'usage-sentinel-claude:/var/lib/usage-sentinel/claude' \
           'usage-sentinel-codex:/var/lib/usage-sentinel/codex'
+        [ "$FAKE_SCENARIO" != extra_mount ] || echo 'unexpected-volume:/unexpected'
         ;;
-      *Healthcheck.Test*) printf 'CMD-SHELL\n%s\n' "$FAKE_HEALTH_CMD" ;;
+      *Healthcheck.Test*)
+        if [ "$FAKE_SCENARIO" = different_health ]; then
+          printf 'CMD-SHELL\nnode -e false\n'
+        else
+          printf 'CMD-SHELL\n%s\n' "$FAKE_HEALTH_CMD"
+          [ "$FAKE_SCENARIO" != bad_health ] || echo unexpected
+        fi
+        ;;
       *Healthcheck.Interval*) echo 30s ;;
       *Healthcheck.Timeout*) echo 5s ;;
       *Healthcheck.Retries*) echo 3 ;;
@@ -113,6 +122,14 @@ run_dc incompatible up
 [ "$RC" -ne 0 ] || fail "incompatible sentinel accepted"
 grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
+
+for scenario in duplicate_env extra_mount bad_health different_health; do
+  run_dc "$scenario" up
+  [ "$RC" -ne 0 ] || fail "$scenario sentinel accepted"
+  grep -qi incompatible "$TMP/err" || fail "$scenario failure unclear"
+  assert_no_log "docker start usage-sentinel"
+  assert_no_log "docker rm"
+done
 
 run_dc healthy sentinel-update
 [ "$RC" -eq 0 ] || fail "sentinel-update failed"
