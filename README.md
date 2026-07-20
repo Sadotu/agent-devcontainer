@@ -54,10 +54,11 @@ filled in:
        "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
      ],
      "remoteUser": "vscode",
-     "runArgs": ["--init", "--security-opt", "no-new-privileges"],
+     "runArgs": ["--init", "--security-opt", "no-new-privileges", "--network=agent-services"],
      "containerEnv": {
        "HISTFILE": "/home/vscode/.history/.bash_history",
        "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+       "SENTINEL_URL": "http://usage-sentinel:4317",
        "PROJECT_NAME": "__PROJECT_NAME__",
        "GH_OWNER": "__GH_OWNER__",
        "APP_ID": "__APP_ID__"
@@ -129,53 +130,92 @@ Then use the `dc` wrapper (`.devcontainer/dc`):
 ./.devcontainer/dc wipe-volumes --yes  # delete persisted agent config/auth volumes (destructive)
 ```
 
-`up` then `shell` = you're in. Run `claude`, `codex` from that shell.
+Normal workflow:
+
+```bash
+./.devcontainer/dc up
+./.devcontainer/dc shell
+start work
+```
+
+First `up` ensures one machine-wide `usage-sentinel` service is healthy, then
+starts this project's devcontainer. It does not start issue work or an LLM.
+Inside the shell, `start work` explicitly launches the bundled
+`issue-orchestrator`. No agent starts automatically. The shell function accepts
+only the literal command `start work` and invokes `issue-orchestrator work`.
+
+### Shared Usage Sentinel
+
+Every project joins Docker network `agent-services` and receives
+`SENTINEL_URL=http://usage-sentinel:4317`. Multiple projects on the same Docker
+machine therefore use the same Sentinel. Projects mount neither the Docker
+socket nor Sentinel storage; only the standalone Sentinel container owns its
+credentials and data.
+
+Sentinel uses exactly three machine-wide named volumes:
+
+- `usage-sentinel-data` at `/var/lib/usage-sentinel/data`
+- `usage-sentinel-claude` at `/var/lib/usage-sentinel/claude`
+- `usage-sentinel-codex` at `/var/lib/usage-sentinel/codex`
+
+They survive host reboot, project rebuild, image update, and Sentinel container
+recreation. Normal `dc up`, `dc rebuild`, `dc down`, and
+`./.devcontainer/dc sentinel-update` never delete them. Use `sentinel-update`
+to pull and recreate Sentinel while preserving all three volumes.
+
+#### One-time provider login
+
+Login once per Docker machine, not once per project. Stop the Sentinel writer,
+run its provider CLI in a disposable container with the same network and all
+three volumes, then restart Sentinel with `dc up`:
+
+```bash
+docker stop usage-sentinel
+docker run --rm -it --network agent-services \
+  -e CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude \
+  -v usage-sentinel-data:/var/lib/usage-sentinel/data \
+  -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
+  -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
+  --entrypoint claude ghcr.io/sadotu/usage-sentinel:latest
+./.devcontainer/dc up
+```
+
+Complete Claude's interactive login, then exit. For Codex:
+
+```bash
+docker stop usage-sentinel
+docker run --rm -it --network agent-services \
+  -e CODEX_HOME=/var/lib/usage-sentinel/codex \
+  -v usage-sentinel-data:/var/lib/usage-sentinel/data \
+  -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
+  -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
+  --entrypoint codex ghcr.io/sadotu/usage-sentinel:latest login --device-auth
+./.devcontainer/dc up
+```
+
+#### Destructive provider credential reset
+
+**Warning:** these explicitly named resets permanently delete that provider's
+machine-wide Sentinel credentials. Every project using Sentinel will require
+that provider login again. Reset Claude or Codex, respectively:
+
+```bash
+docker rm -f usage-sentinel
+docker volume rm usage-sentinel-claude
+./.devcontainer/dc up
+```
+
+```bash
+docker rm -f usage-sentinel
+docker volume rm usage-sentinel-codex
+./.devcontainer/dc up
+```
 
 ### VS Code (optional alternative)
 
 If you ever want the GUI: install the **Dev Containers** extension →
 `F1` → **Dev Containers: Reopen in Container**. Same `devcontainer.json`,
 same result.
-
-## Authenticate (one time, inside the container)
-
-Credentials are fetched from Bitwarden if configured, or entered manually,
-and stored in container volumes — never commit them.
-
-| Tool | Command | Notes |
-|------|---------|-------|
-| GitHub (git + `gh`) | Bitwarden: unlock once at first start (key fetched automatically). Manual: drop the App key into `~/.config/github-app/` once | Automatic thereafter — see [Repository access](#repository-access-github-app) |
-| Claude Code | `claude` | Browser OAuth login fails in this container — see below |
-| Codex CLI | Bitwarden `codex-auth-token` item Notes (auto), or `codex login --device-auth` (manual) | Browser OAuth callback fails in this container; both paths keep your ChatGPT subscription (no API key) — see below |
-
-### Claude Code auth (headless container gotcha)
-
-`claude`'s `/login` browser flow needs a localhost OAuth callback, which
-can't reach the container's network namespace. It'll say "Login successful"
-but the token never persists (`Not logged in` again on next run). Use a
-long-lived token instead:
-
-1. On your **host** machine (anywhere with a real browser): `claude setup-token`
-   → copy the printed token (valid ~1 year).
-2. Set it as `CLAUDE_CODE_OAUTH_TOKEN` in your host shell **before** running
-   `./.devcontainer/dc up` — `devcontainer.json` forwards it in via
-   `${localEnv:CLAUDE_CODE_OAUTH_TOKEN}`. Persist it in your host shell
-   profile so rebuilds don't need re-entry.
-3. If it's already running, `export CLAUDE_CODE_OAUTH_TOKEN=<token>` inside
-   the container shell works too, but won't survive a rebuild.
-
-Alternatively, store the token in Bitwarden — no host-side env needed. Create a
-vault item **named** `claude-code-oauth-token` and paste the `claude setup-token`
-output into its **Notes**. When `CLAUDE_CODE_OAUTH_TOKEN` isn't already forwarded
-from the host, `setup-agents.sh` reads that item's Notes by name and writes the
-token to `~/.claude/oauth-env` (on the persisted `~/.claude` volume), which the
-container's `.bashrc` sources so every interactive `claude` picks it up. To use a
-different item name, set `BW_CLAUDE_TOKEN_ITEM_ID=<item name or GUID>` in
-`devcontainer.json`'s `containerEnv`. The fetch is independent of the GitHub App
-key fetch — it triggers its own Bitwarden unlock when needed — so it works even
-on a rebuild where the App key is already in its volume. Once `~/.claude/oauth-env`
-exists it's reused across rebuilds with no further unlock prompt; delete it (or
-`dc wipe-volumes`) to force a re-fetch after rotating the token.
 
 ## Repository access (GitHub App)
 
@@ -262,7 +302,7 @@ auto-minted token.
 > Override the target repo for a single token mint with
 > `GITHUB_APP_REPO=owner/name` (defaults to `__GH_OWNER__/__PROJECT_NAME__`).
 
-## Start an agent
+## Direct agent commands (advanced)
 
 Aliases (installed by `setup-agents.sh`):
 
@@ -281,6 +321,11 @@ Aliases (installed by `setup-agents.sh`):
 
 Each agent reads its instruction file at the repo root: `CLAUDE.md`
 (Claude Code), `AGENTS.md` (Codex).
+
+Routine issue work should enter through `start work`, which supplies the
+explicit `work` argument to `issue-orchestrator`. Direct aliases remain useful
+for debugging or intentionally bypassing orchestration; none is launched by
+container startup.
 
 ## Skills
 

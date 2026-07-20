@@ -49,6 +49,30 @@ EOF
 assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json"
 assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json.template"
 
+README="$ROOT/README.md"
+assert_readme() { grep -F -- "$1" "$README" >/dev/null || fail "README missing: $1"; }
+
+assert_readme './.devcontainer/dc up'
+assert_readme './.devcontainer/dc shell'
+assert_readme '`start work`'
+assert_readme 'does not start issue work or an LLM'
+assert_readme 'one machine-wide `usage-sentinel`'
+assert_readme 'SENTINEL_URL=http://usage-sentinel:4317'
+assert_readme 'docker stop usage-sentinel'
+assert_readme '--network agent-services'
+assert_readme '--entrypoint claude'
+assert_readme '--entrypoint codex'
+assert_readme '-v usage-sentinel-data:/var/lib/usage-sentinel/data'
+assert_readme '-v usage-sentinel-claude:/var/lib/usage-sentinel/claude'
+assert_readme '-v usage-sentinel-codex:/var/lib/usage-sentinel/codex'
+assert_readme '-e CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude'
+assert_readme '-e CODEX_HOME=/var/lib/usage-sentinel/codex'
+assert_readme './.devcontainer/dc sentinel-update'
+assert_readme 'docker volume rm usage-sentinel-claude'
+assert_readme 'docker volume rm usage-sentinel-codex'
+assert_readme 'issue-orchestrator'
+assert_readme 'No agent starts automatically'
+
 cat >"$TMP/harmless-sentinel-path.json" <<'EOF'
 {
   "runArgs": ["--network=agent-services"],
