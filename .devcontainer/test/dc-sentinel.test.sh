@@ -129,15 +129,34 @@ set -euo pipefail
 printf 'docker %s\n' "$*" >>"$FAKE_DOCKER_LOG"
 
 case "${1:-} ${2:-}" in
-  "network inspect") [ "$FAKE_SCENARIO" != missing ] ;;
+  "network inspect")
+    if [ "$FAKE_SCENARIO" = network_race ]; then
+      grep -Fq 'docker network create agent-services' "$FAKE_DOCKER_LOG"
+    else
+      [ "$FAKE_SCENARIO" != missing ]
+    fi
+    ;;
+  "network create") [ "$FAKE_SCENARIO" != network_race ] ;;
   "container inspect")
-    if [ "$FAKE_SCENARIO" = missing ] && ! grep -Fq 'docker run -d --name usage-sentinel' "$FAKE_DOCKER_LOG"; then
+    if [[ "$FAKE_SCENARIO" = missing || "$FAKE_SCENARIO" = container_race || "$FAKE_SCENARIO" = container_race_starting ]] &&
+      ! grep -Fq 'docker run -d --name usage-sentinel' "$FAKE_DOCKER_LOG"; then
       exit 1
     fi
     format="${5:-}"
     case "$format" in
       *State.Status*) [[ "$FAKE_SCENARIO" = stopped || "$FAKE_SCENARIO" = starting_stopped ]] && echo exited || echo running ;;
-      *State.Health.Status*) [ "$FAKE_SCENARIO" = unhealthy ] && echo unhealthy || { [ "$FAKE_SCENARIO" = starting_stopped ] && echo starting || echo healthy; } ;;
+      *State.Health.Status*)
+        if [ "$FAKE_SCENARIO" = unhealthy ]; then
+          echo unhealthy
+        elif [ "$FAKE_SCENARIO" = starting_stopped ]; then
+          echo starting
+        elif [ "$FAKE_SCENARIO" = container_race_starting ] &&
+          [ "$(grep -c 'State.Health.Status' "$FAKE_DOCKER_LOG")" -eq 1 ]; then
+          echo starting
+        else
+          echo healthy
+        fi
+        ;;
       *Config.Image*) [ "$FAKE_SCENARIO" = incompatible ] && echo wrong/image || echo ghcr.io/sadotu/usage-sentinel:latest ;;
       *HostConfig.RestartPolicy.Name*) echo unless-stopped ;;
       *NetworkSettings.Networks*)
@@ -180,6 +199,7 @@ ENV
     [ "$FAKE_SCENARIO" != missing ] || exit 1
     ;;
 esac
+[ "${1:-}" != run ] || [[ "$FAKE_SCENARIO" != container_race && "$FAKE_SCENARIO" != container_race_starting ]]
 exit 0
 EOF
 chmod +x "$TMP/bin/docker" "$TMP/bin/devcontainer" "$TMP/bin/sleep"
@@ -233,6 +253,7 @@ run_dc incompatible up
 [ "$RC" -ne 0 ] || fail "incompatible sentinel accepted"
 grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
+grep -qi 'remove.*manually' "$TMP/err" || fail "incompatible guidance recommends unusable update path"
 
 for scenario in duplicate_env extra_mount extra_network bad_health different_health; do
   run_dc "$scenario" up
@@ -246,6 +267,20 @@ run_dc starting_stopped up
 [ "$RC" -ne 0 ] || fail "starting sentinel wait did not time out"
 grep -qi 'timed out' "$TMP/err" || fail "bounded wait timeout unclear"
 [ "$(grep -c '^sleep 2$' "$LOG")" -eq 30 ] || fail "bounded wait exceeded 30 polls"
+assert_no_log "docker rm"
+
+run_dc network_race up
+[ "$RC" -eq 0 ] || fail "network creation race not reconciled"
+assert_log "docker network create agent-services"
+
+run_dc container_race up
+[ "$RC" -eq 0 ] || fail "container creation race not reconciled"
+[ "$(grep -c '^docker run -d --name usage-sentinel' "$LOG")" -eq 1 ] || fail "container race created competitor"
+assert_no_log "docker rm"
+
+run_dc container_race_starting up
+[ "$RC" -eq 0 ] || fail "starting container race winner was not awaited"
+[ "$(grep -c 'State.Health.Status' "$LOG")" -eq 2 ] || fail "starting race winner health was not rechecked"
 assert_no_log "docker rm"
 
 run_dc healthy sentinel-update

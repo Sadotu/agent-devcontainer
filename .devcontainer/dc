@@ -70,8 +70,16 @@ SENTINEL_NETWORK="agent-services"
 SENTINEL_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(response => { if (!response.ok) throw new Error(\"health check failed: \" + response.status); })'"
 
 ensure_sentinel_network() {
-  docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1 ||
-    docker network create "$SENTINEL_NETWORK" >/dev/null
+  if docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1; then
+    return
+  fi
+  if docker network create "$SENTINEL_NETWORK" >/dev/null 2>&1; then
+    return
+  fi
+  docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1 || {
+    echo "ERROR: failed to create or inspect $SENTINEL_NETWORK network." >&2
+    return 1
+  }
 }
 
 sentinel_inspect() {
@@ -155,22 +163,30 @@ ensure_sentinel() {
   ensure_sentinel_network
   if ! docker container inspect "$SENTINEL_NAME" >/dev/null 2>&1; then
     docker pull "$SENTINEL_IMAGE"
-    create_sentinel
-    wait_for_sentinel
-    return
+    if create_sentinel; then
+      wait_for_sentinel
+      return
+    fi
+    if ! docker container inspect "$SENTINEL_NAME" >/dev/null 2>&1; then
+      echo "ERROR: failed to create usage-sentinel and no competing container appeared." >&2
+      return 1
+    fi
   fi
   if ! sentinel_compatible; then
-    echo "ERROR: existing usage-sentinel container is incompatible; run 'dc sentinel-update' after checking its configuration." >&2
+    echo "ERROR: existing usage-sentinel container is incompatible; inspect and remove it manually before recreating it with the fixed named volumes." >&2
     return 1
   fi
   status="$(sentinel_inspect '{{.State.Status}}')"
   health="$(sentinel_inspect '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
   if [ "$status" = running ]; then
-    [ "$health" = healthy ] || {
-      echo "ERROR: usage-sentinel is $health; inspect it before continuing." >&2
-      return 1
-    }
-    return
+    case "$health" in
+      healthy) return ;;
+      starting) wait_for_sentinel; return ;;
+      *)
+        echo "ERROR: usage-sentinel is $health; inspect it before continuing." >&2
+        return 1
+        ;;
+    esac
   fi
   docker start "$SENTINEL_NAME" >/dev/null
   wait_for_sentinel
