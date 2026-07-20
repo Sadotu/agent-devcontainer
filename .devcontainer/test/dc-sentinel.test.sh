@@ -23,20 +23,44 @@ if (config.containerEnv?.SENTINEL_URL !== "http://usage-sentinel:4317") {
   throw new Error(`${path}: SENTINEL_URL must equal http://usage-sentinel:4317`);
 }
 
-const serialized = JSON.stringify(config);
-for (const forbidden of ["/var/run/docker.sock", "/var/lib/usage-sentinel"]) {
-  if (serialized.includes(forbidden)) {
-    throw new Error(`${path}: forbidden mount path ${forbidden}`);
+const mountSpecs = [config.workspaceMount, ...(config.mounts ?? [])].filter(Boolean);
+for (const mount of mountSpecs) {
+  const fields = typeof mount === "string"
+    ? Object.fromEntries(mount.split(",").map((field) => field.split("=", 2)))
+    : mount;
+  const endpoints = [
+    fields.source ?? fields.src,
+    fields.target ?? fields.dst ?? fields.destination,
+  ].filter(Boolean);
+  for (const endpoint of endpoints) {
+    if (endpoint === "/var/run/docker.sock" ||
+        endpoint === "/var/lib/usage-sentinel" ||
+        endpoint.startsWith("/var/lib/usage-sentinel/")) {
+      throw new Error(`${path}: forbidden mount endpoint ${endpoint}`);
+    }
   }
-}
-if (config.mounts?.some((mount) => mount.toLowerCase().includes("sentinel"))) {
-  throw new Error(`${path}: forbidden Sentinel credential/cache mount`);
+  if (JSON.stringify(mount).toLowerCase().includes("sentinel")) {
+    throw new Error(`${path}: forbidden Sentinel credential/cache mount`);
+  }
 }
 EOF
 }
 
 assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json"
 assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json.template"
+
+cat >"$TMP/harmless-sentinel-path.json" <<'EOF'
+{
+  "runArgs": ["--network=agent-services"],
+  "containerEnv": {
+    "SENTINEL_URL": "http://usage-sentinel:4317",
+    "DOCUMENTATION_NOTE": "Sentinel stores service data under /var/lib/usage-sentinel"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/project,type=bind",
+  "mounts": ["source=project-cache,target=/home/vscode/.cache,type=volume"]
+}
+EOF
+assert_project_sentinel_config "$TMP/harmless-sentinel-path.json"
 
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/devcontainer" <<'EOF'
