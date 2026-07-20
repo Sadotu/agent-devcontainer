@@ -219,6 +219,22 @@ If you ever want the GUI: install the **Dev Containers** extension →
 `F1` → **Dev Containers: Reopen in Container**. Same `devcontainer.json`,
 same result.
 
+## Project worker authentication
+
+Sentinel provider login above authenticates only the machine-wide usage
+service. Claude workers launched by `start work` also need agent credentials in
+this project's container. Auth uses project-specific `~/.claude` and `~/.codex` volumes
+that persist across rebuilds.
+
+For Claude, run `claude setup-token` on a host with a browser, export the
+result as `CLAUDE_CODE_OAUTH_TOKEN`, then run `dc up`; the project template
+forwards that variable. Alternatively, put the token in the Notes of a
+Bitwarden item named `claude-code-oauth-token`; `setup-agents.sh` stores it in
+the project's Claude volume. For Codex, put a working `~/.codex/auth.json` in
+the Notes of a Bitwarden item named `codex-auth-token`, or run
+`codex login --device-auth` once inside the project container. Do not use these
+project-worker paths as substitutes for Sentinel's separate provider login.
+
 ## Repository access (GitHub App)
 
 The container authenticates to GitHub as the **`container-coding-agent`
@@ -381,7 +397,8 @@ CLI updates + plugin/skill installs itself. What's left only after
 `dc wipe-volumes --yes` or truly first run:
 
 1. **Claude Code auth** — on your host, `claude setup-token`, export
-   `CLAUDE_CODE_OAUTH_TOKEN` before `dc up` (see above).
+   `CLAUDE_CODE_OAUTH_TOKEN` before `dc up`; Bitwarden is also supported as
+   described in [Project worker authentication](#project-worker-authentication).
 2. **GitHub App key** — unlock Bitwarden once when prompted; the item is
    discovered by its `app-id`/`private-key-b64` fields and fetched
    automatically. On failure, fix and re-run `./.devcontainer/dc setup`

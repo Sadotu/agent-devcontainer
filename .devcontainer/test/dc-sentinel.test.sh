@@ -58,15 +58,6 @@ assert_readme '`start work`'
 assert_readme 'does not start issue work or an LLM'
 assert_readme 'one machine-wide `usage-sentinel`'
 assert_readme 'SENTINEL_URL=http://usage-sentinel:4317'
-assert_readme 'docker stop usage-sentinel'
-assert_readme '--network agent-services'
-assert_readme '--entrypoint claude ghcr.io/sadotu/usage-sentinel:latest auth login --claudeai'
-assert_readme "--entrypoint codex ghcr.io/sadotu/usage-sentinel:latest login --config 'cli_auth_credentials_store=\"file\"' --device-auth"
-assert_readme '-v usage-sentinel-data:/var/lib/usage-sentinel/data'
-assert_readme '-v usage-sentinel-claude:/var/lib/usage-sentinel/claude'
-assert_readme '-v usage-sentinel-codex:/var/lib/usage-sentinel/codex'
-assert_readme '-e CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude'
-assert_readme '-e CODEX_HOME=/var/lib/usage-sentinel/codex'
 assert_readme './.devcontainer/dc sentinel-update'
 assert_readme 'docker volume rm usage-sentinel-claude'
 assert_readme 'docker volume rm usage-sentinel-codex'
@@ -75,6 +66,40 @@ assert_readme 'invokes `issue-orchestrator` with no arguments'
 assert_readme 'No agent starts automatically'
 ! grep -F -- 'explicit `work` argument to `issue-orchestrator`' "$README" >/dev/null ||
   fail 'README contains stale explicit work argument claim'
+assert_readme '## Project worker authentication'
+assert_readme 'Claude workers launched by `start work`'
+assert_readme '`claude setup-token`'
+assert_readme '`CLAUDE_CODE_OAUTH_TOKEN`'
+assert_readme '`claude-code-oauth-token`'
+assert_readme '`codex-auth-token`'
+assert_readme '`codex login --device-auth`'
+assert_readme 'project-specific `~/.claude` and `~/.codex` volumes'
+assert_readme '[Project worker authentication](#project-worker-authentication)'
+
+node - "$README" <<'EOF' || fail 'README provider login blocks incomplete'
+const fs = require('fs');
+const readme = fs.readFileSync(process.argv[2], 'utf8');
+const blocks = [...readme.matchAll(/```bash\n([\s\S]*?)```/g)]
+  .map((match) => match[1].replace(/\\\n\s*/g, ' ').replace(/\s+/g, ' ').trim());
+const common = [
+  'docker stop usage-sentinel',
+  'docker run --rm -it --network agent-services',
+  '-v usage-sentinel-data:/var/lib/usage-sentinel/data',
+  '-v usage-sentinel-claude:/var/lib/usage-sentinel/claude',
+  '-v usage-sentinel-codex:/var/lib/usage-sentinel/codex',
+  './.devcontainer/dc up',
+];
+const providers = [
+  ['Claude', '-e CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude', '--entrypoint claude ghcr.io/sadotu/usage-sentinel:latest auth login --claudeai'],
+  ['Codex', '-e CODEX_HOME=/var/lib/usage-sentinel/codex', '--entrypoint codex ghcr.io/sadotu/usage-sentinel:latest login --config \'cli_auth_credentials_store="file"\' --device-auth'],
+];
+for (const [name, ...required] of providers) {
+  const block = blocks.find((candidate) => required.every((item) => candidate.includes(item)));
+  if (!block || !common.every((item) => block.includes(item))) {
+    throw new Error(`${name} provider login must be one complete fenced command block`);
+  }
+}
+EOF
 
 cat >"$TMP/harmless-sentinel-path.json" <<'EOF'
 {
