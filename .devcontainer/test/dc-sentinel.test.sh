@@ -15,6 +15,10 @@ cat >"$TMP/bin/devcontainer" <<'EOF'
 #!/usr/bin/env bash
 printf 'devcontainer %s\n' "$*" >>"$FAKE_DOCKER_LOG"
 EOF
+cat >"$TMP/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+printf 'sleep %s\n' "$*" >>"$FAKE_DOCKER_LOG"
+EOF
 cat >"$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -28,11 +32,14 @@ case "${1:-} ${2:-}" in
     fi
     format="${5:-}"
     case "$format" in
-      *State.Status*) [ "$FAKE_SCENARIO" = stopped ] && echo exited || echo running ;;
-      *State.Health.Status*) [ "$FAKE_SCENARIO" = unhealthy ] && echo unhealthy || echo healthy ;;
+      *State.Status*) [[ "$FAKE_SCENARIO" = stopped || "$FAKE_SCENARIO" = starting_stopped ]] && echo exited || echo running ;;
+      *State.Health.Status*) [ "$FAKE_SCENARIO" = unhealthy ] && echo unhealthy || { [ "$FAKE_SCENARIO" = starting_stopped ] && echo starting || echo healthy; } ;;
       *Config.Image*) [ "$FAKE_SCENARIO" = incompatible ] && echo wrong/image || echo ghcr.io/sadotu/usage-sentinel:latest ;;
       *HostConfig.RestartPolicy.Name*) echo unless-stopped ;;
-      *NetworkSettings.Networks*) echo agent-services ;;
+      *NetworkSettings.Networks*)
+        echo agent-services
+        [ "$FAKE_SCENARIO" != extra_network ] || echo arbitrary-network
+        ;;
       *Config.Env*)
         cat <<'ENV'
 USAGE_SENTINEL_HOST=0.0.0.0
@@ -71,7 +78,7 @@ ENV
 esac
 exit 0
 EOF
-chmod +x "$TMP/bin/docker" "$TMP/bin/devcontainer"
+chmod +x "$TMP/bin/docker" "$TMP/bin/devcontainer" "$TMP/bin/sleep"
 
 export PATH="$TMP/bin:$PATH"
 export FAKE_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(response => { if (!response.ok) throw new Error(\"health check failed: \" + response.status); })'"
@@ -123,13 +130,19 @@ run_dc incompatible up
 grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
 
-for scenario in duplicate_env extra_mount bad_health different_health; do
+for scenario in duplicate_env extra_mount extra_network bad_health different_health; do
   run_dc "$scenario" up
   [ "$RC" -ne 0 ] || fail "$scenario sentinel accepted"
   grep -qi incompatible "$TMP/err" || fail "$scenario failure unclear"
   assert_no_log "docker start usage-sentinel"
   assert_no_log "docker rm"
 done
+
+run_dc starting_stopped up
+[ "$RC" -ne 0 ] || fail "starting sentinel wait did not time out"
+grep -qi 'timed out' "$TMP/err" || fail "bounded wait timeout unclear"
+[ "$(grep -c '^sleep 2$' "$LOG")" -eq 30 ] || fail "bounded wait exceeded 30 polls"
+assert_no_log "docker rm"
 
 run_dc healthy sentinel-update
 [ "$RC" -eq 0 ] || fail "sentinel-update failed"

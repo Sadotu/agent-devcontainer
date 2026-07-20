@@ -98,7 +98,7 @@ sentinel_compatible() {
 
   [ "$image" = "$SENTINEL_IMAGE" ] &&
     [ "$restart" = "unless-stopped" ] &&
-    grep -Fxq "$SENTINEL_NETWORK" <<<"$network" &&
+    [ "$(sort <<<"$network")" = "$SENTINEL_NETWORK" ] &&
     [ "$(grep -Ec '^USAGE_SENTINEL_HOST=' <<<"$env")" = 1 ] &&
     [ "$(grep -Ec '^USAGE_SENTINEL_DATA_DIR=' <<<"$env")" = 1 ] &&
     [ "$(grep -Ec '^USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=' <<<"$env")" = 1 ] &&
