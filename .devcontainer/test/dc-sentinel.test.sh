@@ -73,6 +73,8 @@ assert_readme 'docker volume rm usage-sentinel-codex'
 assert_readme 'issue-orchestrator'
 assert_readme 'invokes `issue-orchestrator` with no arguments'
 assert_readme 'No agent starts automatically'
+! grep -F -- 'explicit `work` argument to `issue-orchestrator`' "$README" >/dev/null ||
+  fail 'README contains stale explicit work argument claim'
 
 cat >"$TMP/harmless-sentinel-path.json" <<'EOF'
 {

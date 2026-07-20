@@ -324,10 +324,10 @@ Aliases (installed by `setup-agents.sh`):
 Each agent reads its instruction file at the repo root: `CLAUDE.md`
 (Claude Code), `AGENTS.md` (Codex).
 
-Routine issue work should enter through `start work`, which supplies the
-explicit `work` argument to `issue-orchestrator`. Direct aliases remain useful
-for debugging or intentionally bypassing orchestration; none is launched by
-container startup.
+Routine issue work should enter through `start work`. The shell function
+validates that literal phrase, then runs `issue-orchestrator` without arguments.
+Direct aliases remain useful for debugging or intentionally bypassing
+orchestration; none is launched by container startup.
 
 ## Skills
 
