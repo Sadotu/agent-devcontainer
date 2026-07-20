@@ -10,6 +10,34 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 assert_log() { grep -F -- "$1" "$LOG" >/dev/null || fail "missing docker call: $1"; }
 assert_no_log() { ! grep -F -- "$1" "$LOG" >/dev/null || fail "unexpected docker call: $1"; }
 
+assert_project_sentinel_config() {
+  node - "$1" <<'EOF' || fail "invalid project sentinel config: $1"
+const fs = require("fs");
+const path = process.argv[2];
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+
+if (!config.runArgs?.includes("--network=agent-services")) {
+  throw new Error(`${path}: missing --network=agent-services run arg`);
+}
+if (config.containerEnv?.SENTINEL_URL !== "http://usage-sentinel:4317") {
+  throw new Error(`${path}: SENTINEL_URL must equal http://usage-sentinel:4317`);
+}
+
+const serialized = JSON.stringify(config);
+for (const forbidden of ["/var/run/docker.sock", "/var/lib/usage-sentinel"]) {
+  if (serialized.includes(forbidden)) {
+    throw new Error(`${path}: forbidden mount path ${forbidden}`);
+  }
+}
+if (config.mounts?.some((mount) => mount.toLowerCase().includes("sentinel"))) {
+  throw new Error(`${path}: forbidden Sentinel credential/cache mount`);
+}
+EOF
+}
+
+assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json"
+assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json.template"
+
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/devcontainer" <<'EOF'
 #!/usr/bin/env bash

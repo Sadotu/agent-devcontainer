@@ -11,10 +11,11 @@
     "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
   ],
   "remoteUser": "vscode",
-  "runArgs": ["--init", "--security-opt", "no-new-privileges"],
+  "runArgs": ["--init", "--security-opt", "no-new-privileges", "--network=agent-services"],
   "containerEnv": {
     "HISTFILE": "/home/vscode/.history/.bash_history",
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "SENTINEL_URL": "http://usage-sentinel:4317",
     "PROJECT_NAME": "__PROJECT_NAME__",
     "GH_OWNER": "__GH_OWNER__",
     "APP_ID": "__APP_ID__"
