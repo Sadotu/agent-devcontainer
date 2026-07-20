@@ -142,7 +142,7 @@ First `up` ensures one machine-wide `usage-sentinel` service is healthy, then
 starts this project's devcontainer. It does not start issue work or an LLM.
 Inside the shell, `start work` explicitly launches the bundled
 `issue-orchestrator`. No agent starts automatically. The shell function accepts
-only the literal command `start work` and invokes `issue-orchestrator work`.
+only the literal command `start work` and invokes `issue-orchestrator` with no arguments.
 
 ### Shared Usage Sentinel
 
@@ -176,7 +176,7 @@ docker run --rm -it --network agent-services \
   -v usage-sentinel-data:/var/lib/usage-sentinel/data \
   -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
   -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
-  --entrypoint claude ghcr.io/sadotu/usage-sentinel:latest
+  --entrypoint claude ghcr.io/sadotu/usage-sentinel:latest auth login --claudeai
 ./.devcontainer/dc up
 ```
 
@@ -189,21 +189,23 @@ docker run --rm -it --network agent-services \
   -v usage-sentinel-data:/var/lib/usage-sentinel/data \
   -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
   -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
-  --entrypoint codex ghcr.io/sadotu/usage-sentinel:latest login --device-auth
+  --entrypoint codex ghcr.io/sadotu/usage-sentinel:latest login --config 'cli_auth_credentials_store="file"' --device-auth
 ./.devcontainer/dc up
 ```
 
 #### Destructive provider credential reset
 
-**Warning:** these explicitly named resets permanently delete that provider's
-machine-wide Sentinel credentials. Every project using Sentinel will require
-that provider login again. Reset Claude or Codex, respectively:
+**Warning:** each command below explicitly deletes one provider credential
+volume. This is irreversible: every project using Sentinel will require that
+provider login again. Reset Claude credentials:
 
 ```bash
 docker rm -f usage-sentinel
 docker volume rm usage-sentinel-claude
 ./.devcontainer/dc up
 ```
+
+Reset Codex credentials:
 
 ```bash
 docker rm -f usage-sentinel
