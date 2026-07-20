@@ -52,7 +52,7 @@ source_test() {
     cat >"$temp_dir/issue-orchestrator" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$PWD" >"$START_TEST_LOG"
-printf '%s\n' "$@" >>"$START_TEST_LOG"
+printf 'argc=%s\n' "$#" >>"$START_TEST_LOG"
 exit 37
 EOF
     chmod +x "$temp_dir/issue-orchestrator"
@@ -73,7 +73,7 @@ EOF
     [[ $status -eq 37 ]]
     mapfile -t invocation <"$START_TEST_LOG"
     [[ ${invocation[0]} == "$PWD" ]]
-    [[ ${invocation[1]} == work ]]
+    [[ ${invocation[1]} == argc=0 ]]
     [[ ${#invocation[@]} -eq 2 ]]
 }
 

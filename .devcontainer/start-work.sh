@@ -4,5 +4,5 @@ start() {
         return 2
     fi
 
-    command issue-orchestrator "$@"
+    command issue-orchestrator
 }
