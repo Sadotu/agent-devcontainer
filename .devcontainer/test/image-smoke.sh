@@ -28,11 +28,11 @@ source_test() {
     local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha hook_output
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
-    artifact="$devcontainer_dir/vendor/issue-orchestrator-bb48f1c5f54e.tgz"
+    artifact="$devcontainer_dir/vendor/issue-orchestrator-b79cef8313c9.tgz"
 
     [[ -f $artifact ]]
     artifact_sha="$(sha256sum "$artifact")"
-    [[ ${artifact_sha%% *} == 6d84b28fddf7f0696105fb7516a7239d643d3179c67161a79e2b6fd3d638259e ]]
+    [[ ${artifact_sha%% *} == 920d64ef668087351a64647fc75ac696f8c3a25073841211c6ceb8955ddc665e ]]
     archive_listing="$(tar -tzf "$artifact")"
     grep -Fxq 'package/package.json' <<<"$archive_listing"
     grep -Fxq 'package/bin/supervisor.mjs' <<<"$archive_listing"
@@ -41,10 +41,10 @@ source_test() {
     [[ "$(jq -r '.version' <<<"$package_json")" == 0.1.0 ]]
     [[ "$(jq -r '.bin["issue-orchestrator"]' <<<"$package_json")" == bin/supervisor.mjs ]]
     ! grep -Fq 'issue-orchestrator/archive/' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'commit bb48f1c5f54eda3881cec68020524ff83139ee7c' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'SHA-256 6d84b28fddf7f0696105fb7516a7239d643d3179c67161a79e2b6fd3d638259e' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'COPY vendor/issue-orchestrator-bb48f1c5f54e.tgz' "$devcontainer_dir/Dockerfile"
-    grep -Fq '/opt/agent-devcontainer/vendor/issue-orchestrator-bb48f1c5f54e.tgz' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'commit b79cef8313c930f2c465a75551c63fc791098c54' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'SHA-256 920d64ef668087351a64647fc75ac696f8c3a25073841211c6ceb8955ddc665e' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'COPY vendor/issue-orchestrator-b79cef8313c9.tgz' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/vendor/issue-orchestrator-b79cef8313c9.tgz' "$devcontainer_dir/Dockerfile"
     grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/Dockerfile"
     grep -Fq '/opt/agent-devcontainer/install-claude-hook.sh \' "$devcontainer_dir/Dockerfile"
     grep -Fq '"$TOOLDIR/install-claude-hook.sh"' "$devcontainer_dir/setup-agents.sh"

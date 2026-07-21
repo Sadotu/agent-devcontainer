@@ -42,9 +42,9 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # Issue Orchestrator package produced with `npm pack` from Sadotu/issue-orchestrator
-# commit bb48f1c5f54eda3881cec68020524ff83139ee7c (package version 0.1.0).
-# SHA-256 6d84b28fddf7f0696105fb7516a7239d643d3179c67161a79e2b6fd3d638259e.
-COPY vendor/issue-orchestrator-bb48f1c5f54e.tgz /opt/agent-devcontainer/vendor/
+# commit b79cef8313c930f2c465a75551c63fc791098c54 (package version 0.1.0).
+# SHA-256 920d64ef668087351a64647fc75ac696f8c3a25073841211c6ceb8955ddc665e.
+COPY vendor/issue-orchestrator-b79cef8313c9.tgz /opt/agent-devcontainer/vendor/
 
 # Agent CLIs — Claude Code, OpenAI Codex.
 # Installed at build time (as root) as the baked-in fallback version.
@@ -56,7 +56,7 @@ RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @bitwarden/cli \
-        /opt/agent-devcontainer/vendor/issue-orchestrator-bb48f1c5f54e.tgz \
+        /opt/agent-devcontainer/vendor/issue-orchestrator-b79cef8313c9.tgz \
     && npm cache clean --force
 
 # Explicit user command for issue orchestration. Defining this in Bash startup
