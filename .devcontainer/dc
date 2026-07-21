@@ -15,6 +15,8 @@
 #                                  unlock / postCreate, no rebuild needed)
 #   ./.devcontainer/dc exec ...   run a one-off command inside
 #   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
+#   ./.devcontainer/dc sentinel-update
+#                                  pull + recreate usage-sentinel (data kept)
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc nuke      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc wipe-volumes --yes
@@ -62,14 +64,159 @@ pull_image() {
   fi
 }
 
+SENTINEL_NAME="usage-sentinel"
+SENTINEL_IMAGE="ghcr.io/sadotu/usage-sentinel:latest"
+SENTINEL_NETWORK="agent-services"
+SENTINEL_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(response => { if (!response.ok) throw new Error(\"health check failed: \" + response.status); })'"
+
+ensure_sentinel_network() {
+  if docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1; then
+    return
+  fi
+  if docker network create "$SENTINEL_NETWORK" >/dev/null 2>&1; then
+    return
+  fi
+  docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1 || {
+    echo "ERROR: failed to create or inspect $SENTINEL_NETWORK network." >&2
+    return 1
+  }
+}
+
+sentinel_inspect() {
+  docker container inspect "$SENTINEL_NAME" --format "$1"
+}
+
+sentinel_compatible() {
+  local image restart network env mounts expected_mounts health_cmd expected_health health_interval health_timeout health_retries health_start
+  image="$(sentinel_inspect '{{.Config.Image}}')"
+  restart="$(sentinel_inspect '{{.HostConfig.RestartPolicy.Name}}')"
+  network="$(sentinel_inspect '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}')"
+  env="$(sentinel_inspect '{{range .Config.Env}}{{println .}}{{end}}')"
+  mounts="$(sentinel_inspect '{{range .Mounts}}{{println .Name ":" .Destination}}{{end}}' | tr -d ' ')"
+  health_cmd="$(sentinel_inspect '{{join .Config.Healthcheck.Test "\n"}}')"
+  health_interval="$(sentinel_inspect '{{.Config.Healthcheck.Interval}}')"
+  health_timeout="$(sentinel_inspect '{{.Config.Healthcheck.Timeout}}')"
+  health_retries="$(sentinel_inspect '{{.Config.Healthcheck.Retries}}')"
+  health_start="$(sentinel_inspect '{{.Config.Healthcheck.StartPeriod}}')"
+  expected_mounts="$(printf '%s\n' \
+    'usage-sentinel-claude:/var/lib/usage-sentinel/claude' \
+    'usage-sentinel-codex:/var/lib/usage-sentinel/codex' \
+    'usage-sentinel-data:/var/lib/usage-sentinel/data')"
+  expected_health="$(printf 'CMD-SHELL\n%s' "$SENTINEL_HEALTH_CMD")"
+
+  [ "$image" = "$SENTINEL_IMAGE" ] &&
+    [ "$restart" = "unless-stopped" ] &&
+    [ "$(sort <<<"$network")" = "$SENTINEL_NETWORK" ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_HOST=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_DATA_DIR=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^USAGE_SENTINEL_CODEX_MANAGED_REFRESH=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^CLAUDE_CONFIG_DIR=' <<<"$env")" = 1 ] &&
+    [ "$(grep -Ec '^CODEX_HOME=' <<<"$env")" = 1 ] &&
+    grep -Fxq 'USAGE_SENTINEL_HOST=0.0.0.0' <<<"$env" &&
+    grep -Fxq 'USAGE_SENTINEL_DATA_DIR=/var/lib/usage-sentinel/data' <<<"$env" &&
+    grep -Fxq 'USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=true' <<<"$env" &&
+    grep -Fxq 'USAGE_SENTINEL_CODEX_MANAGED_REFRESH=true' <<<"$env" &&
+    grep -Fxq 'CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude' <<<"$env" &&
+    grep -Fxq 'CODEX_HOME=/var/lib/usage-sentinel/codex' <<<"$env" &&
+    [ "$(sort <<<"$mounts")" = "$expected_mounts" ] &&
+    [ "$health_cmd" = "$expected_health" ] &&
+    [ "$health_interval" = 30s ] && [ "$health_timeout" = 5s ] &&
+    [ "$health_retries" = 3 ] && [ "$health_start" = 10s ]
+}
+
+wait_for_sentinel() {
+  local status i
+  for i in {1..30}; do
+    status="$(sentinel_inspect '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
+    case "$status" in
+      healthy) return 0 ;;
+      unhealthy)
+        echo "ERROR: usage-sentinel became unhealthy." >&2
+        return 1
+        ;;
+    esac
+    sleep 2
+  done
+  echo "ERROR: timed out waiting for usage-sentinel health." >&2
+  return 1
+}
+
+create_sentinel() {
+  docker run -d --name "$SENTINEL_NAME" --restart unless-stopped --network "$SENTINEL_NETWORK" \
+    -e USAGE_SENTINEL_HOST=0.0.0.0 \
+    -e USAGE_SENTINEL_DATA_DIR=/var/lib/usage-sentinel/data \
+    -e USAGE_SENTINEL_CLAUDE_MANAGED_REFRESH=true \
+    -e USAGE_SENTINEL_CODEX_MANAGED_REFRESH=true \
+    -e CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude \
+    -e CODEX_HOME=/var/lib/usage-sentinel/codex \
+    -v usage-sentinel-data:/var/lib/usage-sentinel/data \
+    -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
+    -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
+    --health-cmd "$SENTINEL_HEALTH_CMD" \
+    --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s \
+    "$SENTINEL_IMAGE" >/dev/null
+}
+
+ensure_sentinel() {
+  local status health
+  ensure_sentinel_network
+  if ! docker container inspect "$SENTINEL_NAME" >/dev/null 2>&1; then
+    docker pull "$SENTINEL_IMAGE"
+    if create_sentinel; then
+      wait_for_sentinel
+      return
+    fi
+    if ! docker container inspect "$SENTINEL_NAME" >/dev/null 2>&1; then
+      echo "ERROR: failed to create usage-sentinel and no competing container appeared." >&2
+      return 1
+    fi
+  fi
+  if ! sentinel_compatible; then
+    echo "ERROR: existing usage-sentinel container is incompatible; inspect and remove it manually before recreating it with the fixed named volumes." >&2
+    return 1
+  fi
+  status="$(sentinel_inspect '{{.State.Status}}')"
+  health="$(sentinel_inspect '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
+  if [ "$status" = running ]; then
+    case "$health" in
+      healthy) return ;;
+      starting) wait_for_sentinel; return ;;
+      *)
+        echo "ERROR: usage-sentinel is $health; inspect it before continuing." >&2
+        return 1
+        ;;
+    esac
+  fi
+  docker start "$SENTINEL_NAME" >/dev/null
+  wait_for_sentinel
+}
+
 case "$cmd" in
   up)
+    ensure_sentinel
     pull_image
     devcontainer up --workspace-folder "$ROOT"
     ;;
   rebuild)
+    ensure_sentinel
     pull_image
     devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    ;;
+  sentinel-update)
+    ensure_sentinel_network
+    if ! docker container inspect "$SENTINEL_NAME" >/dev/null 2>&1; then
+      echo "ERROR: usage-sentinel does not exist; run 'dc up' first." >&2
+      exit 1
+    fi
+    if ! sentinel_compatible; then
+      echo "ERROR: existing usage-sentinel container is incompatible; refusing to replace unknown configuration." >&2
+      exit 1
+    fi
+    docker pull "$SENTINEL_IMAGE"
+    docker rm -f "$SENTINEL_NAME" >/dev/null
+    create_sentinel
+    wait_for_sentinel
     ;;
   shell)
     devcontainer exec --workspace-folder "$ROOT" bash

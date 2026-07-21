@@ -16,11 +16,13 @@
   "runArgs": [
     "--init",
     "--security-opt",
-    "no-new-privileges"
+    "no-new-privileges",
+    "--network=agent-services"
   ],
   "containerEnv": {
     "HISTFILE": "/home/vscode/.history/.bash_history",
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "SENTINEL_URL": "http://usage-sentinel:4317",
     "PROJECT_NAME": "agent-devcontainer",
     "GH_OWNER": "Sadotu",
     "APP_ID": "4217970"
