@@ -77,11 +77,12 @@ RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
 # Devcontainer tooling shared by every project — postCreateCommand in each
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
-COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
+COPY setup-agents.sh install-claude-hook.sh gh-app-token.sh git-credential-github-app.sh \
         /opt/agent-devcontainer/
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
 RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
+        /opt/agent-devcontainer/install-claude-hook.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/githooks/pre-push

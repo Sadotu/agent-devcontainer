@@ -51,9 +51,18 @@ assert_project_sentinel_config "$ROOT/.devcontainer/devcontainer.json.template"
 
 README="$ROOT/README.md"
 assert_readme() { grep -F -- "$1" "$README" >/dev/null || fail "README missing: $1"; }
+README_NORMALIZED="$(tr '\n' ' ' <"$README" | tr -s ' ')"
+assert_readme_normalized() {
+  [[ $README_NORMALIZED == *"$1"* ]] || fail "README missing: $1"
+}
 
 assert_readme './.devcontainer/dc up'
 assert_readme './.devcontainer/dc shell'
+assert_readme '## Upgrade existing projects once'
+assert_readme_normalized 'A rebuild only pulls the image; it cannot update these two host-side files.'
+assert_readme_normalized 'answer `y` to overwrite both `dc` and `devcontainer.json`'
+assert_readme_normalized 'Before **Dev Containers: Reopen in Container**, run `./.devcontainer/dc up`'
+assert_readme_normalized 'VS Code does not create the host-side `usage-sentinel` service or `agent-services` network'
 assert_readme '`start work`'
 assert_readme 'does not start issue work or an LLM'
 assert_readme 'one machine-wide `usage-sentinel`'

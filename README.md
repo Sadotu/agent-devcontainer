@@ -33,6 +33,23 @@ image scaffolds stale templates.
 
 Then wire up GitHub App credentials (below) and `./.devcontainer/dc up`.
 
+### Upgrade existing projects once
+
+Projects scaffolded before machine-wide Sentinel support must refresh both
+`.devcontainer/dc` and `.devcontainer/devcontainer.json`. A rebuild only pulls
+the image; it cannot update these two host-side files. From each existing
+project directory, pull the current image and rerun the scaffolder:
+
+```bash
+docker pull ghcr.io/sadotu/agent-devcontainer:latest
+docker run --rm -it -v "$PWD":/out ghcr.io/sadotu/agent-devcontainer init
+```
+
+Accept the detected project values, then answer `y` to overwrite both `dc` and
+`devcontainer.json`. Review and commit those project-local changes once. After
+that one-time refresh, normal image updates use
+`./.devcontainer/dc rebuild` again.
+
 ### Manual alternative (the two files by hand)
 
 If you'd rather not run the image, `.devcontainer/dc` is host-side and
@@ -215,9 +232,12 @@ docker volume rm usage-sentinel-codex
 
 ### VS Code (optional alternative)
 
-If you ever want the GUI: install the **Dev Containers** extension →
-`F1` → **Dev Containers: Reopen in Container**. Same `devcontainer.json`,
-same result.
+VS Code does not create the host-side `usage-sentinel` service or
+`agent-services` network. Before **Dev Containers: Reopen in Container**, run
+`./.devcontainer/dc up` from a host terminal. Then install the **Dev
+Containers** extension and use `F1` → **Dev Containers: Reopen in Container**
+to attach the GUI to the prepared project container. Use
+`./.devcontainer/dc rebuild` for rebuilds that must also ensure Sentinel.
 
 ## Project worker authentication
 
