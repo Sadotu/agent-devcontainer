@@ -16,6 +16,7 @@ secrets/
 # Local noise
 *.log
 node_modules/
+.worktrees/
 
 # Dogfood copy dropped in by setup-agents.sh when developing this repo's own
 # devcontainer — source of truth is .devcontainer/agents.toml.
