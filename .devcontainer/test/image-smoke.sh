@@ -26,25 +26,38 @@ assert_invalid_usage() {
 
 source_test() {
     local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha hook_output
+    local short_commit full_commit pkg_version expected_sha
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
-    artifact="$devcontainer_dir/vendor/issue-orchestrator-b79cef8313c9.tgz"
+
+    # Derived from the Dockerfile itself (not hardcoded) so bumping the
+    # vendored issue-orchestrator package can't leave this test asserting a
+    # stale commit/hash/version — it was hardcoded once and silently drifted
+    # out of sync with the Dockerfile across a later vendor bump.
+    short_commit="$(grep -oP '(?<=COPY vendor/issue-orchestrator-)[0-9a-f]+(?=\.tgz)' "$devcontainer_dir/Dockerfile" | head -1)"
+    [[ -n $short_commit ]]
+    full_commit="$(grep -oP '(?<=# commit )[0-9a-f]+' "$devcontainer_dir/Dockerfile" | head -1)"
+    pkg_version="$(grep -oP '(?<=package version )[0-9.]+(?=\)\.)' "$devcontainer_dir/Dockerfile" | head -1)"
+    expected_sha="$(grep -oP '(?<=SHA-256 )[0-9a-f]+' "$devcontainer_dir/Dockerfile" | head -1)"
+    [[ $full_commit == "$short_commit"* ]]
+
+    artifact="$devcontainer_dir/vendor/issue-orchestrator-$short_commit.tgz"
 
     [[ -f $artifact ]]
     artifact_sha="$(sha256sum "$artifact")"
-    [[ ${artifact_sha%% *} == 920d64ef668087351a64647fc75ac696f8c3a25073841211c6ceb8955ddc665e ]]
+    [[ ${artifact_sha%% *} == "$expected_sha" ]]
     archive_listing="$(tar -tzf "$artifact")"
     grep -Fxq 'package/package.json' <<<"$archive_listing"
     grep -Fxq 'package/bin/supervisor.mjs' <<<"$archive_listing"
     grep -Fxq 'package/hooks/pretooluse-usage-gate.mjs' <<<"$archive_listing"
     package_json="$(tar -xOzf "$artifact" package/package.json)"
-    [[ "$(jq -r '.version' <<<"$package_json")" == 0.1.0 ]]
+    [[ "$(jq -r '.version' <<<"$package_json")" == "$pkg_version" ]]
     [[ "$(jq -r '.bin["issue-orchestrator"]' <<<"$package_json")" == bin/supervisor.mjs ]]
     ! grep -Fq 'issue-orchestrator/archive/' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'commit b79cef8313c930f2c465a75551c63fc791098c54' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'SHA-256 920d64ef668087351a64647fc75ac696f8c3a25073841211c6ceb8955ddc665e' "$devcontainer_dir/Dockerfile"
-    grep -Fq 'COPY vendor/issue-orchestrator-b79cef8313c9.tgz' "$devcontainer_dir/Dockerfile"
-    grep -Fq '/opt/agent-devcontainer/vendor/issue-orchestrator-b79cef8313c9.tgz' "$devcontainer_dir/Dockerfile"
+    grep -Fq "commit $full_commit (package version $pkg_version)." "$devcontainer_dir/Dockerfile"
+    grep -Fq "SHA-256 $expected_sha." "$devcontainer_dir/Dockerfile"
+    grep -Fq "COPY vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
+    grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/Dockerfile"
     grep -Fq '/opt/agent-devcontainer/install-claude-hook.sh \' "$devcontainer_dir/Dockerfile"
     grep -Fq '"$TOOLDIR/install-claude-hook.sh"' "$devcontainer_dir/setup-agents.sh"
