@@ -391,7 +391,18 @@ fi
 # over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
 # the item name (name or GUID).
 CODEX_AUTH="$HOME/.codex/auth.json"
-if [ ! -r "$CODEX_AUTH" ] && ensure_bw_session besteffort; then
+# Track outcome for the final checklist's `->` callout (mirrors the Claude
+# token section): already-present (persisted volume / prior seed, no fetch),
+# freshly-seeded (fetched this run), or unseeded (absent and no valid notes).
+codex_auth_status=unseeded
+# When auth.json already exists (the normal rebuild case — the ~/.codex volume
+# survives), announce it explicitly rather than skipping in silence, so the run
+# log confirms Codex auth even when nothing is fetched. Only unlock the vault
+# and fetch when the file is genuinely absent.
+if [ -r "$CODEX_AUTH" ]; then
+  codex_auth_status=already-present
+  echo "    Codex auth.json already present (persisted volume or prior seed) — skipping fetch."
+elif ensure_bw_session besteffort; then
   codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
   codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
   if [ -n "$codex_notes" ]; then
@@ -401,6 +412,7 @@ if [ ! -r "$CODEX_AUTH" ] && ensure_bw_session besteffort; then
     if printf '%s' "$codex_notes" | jq -e '.tokens.refresh_token' >/dev/null 2>&1; then
       printf '%s\n' "$codex_notes" > "$CODEX_AUTH"
       chmod 600 "$CODEX_AUTH"
+      codex_auth_status=freshly-seeded
       echo "    Codex auth.json seeded from Bitwarden item '$codex_item'."
     else
       echo "    WARN: '$codex_item' notes aren't valid Codex auth JSON — skipping seed." >&2
@@ -531,6 +543,10 @@ else
 fi
 if [ -r "${CODEX_AUTH:-$HOME/.codex/auth.json}" ]; then
   echo "3. Codex CLI auth: present (seeded from Bitwarden or a prior login)."
+  case "${codex_auth_status:-}" in
+    freshly-seeded)  echo "   -> freshly seeded from Bitwarden this run." ;;
+    already-present) echo "   -> already present, no fetch needed this run." ;;
+  esac
 else
   echo "3. Codex CLI auth: not seeded. Either put a working ~/.codex/auth.json in"
   echo "   the Notes of a Bitwarden item named 'codex-auth-token' for automatic"
