@@ -14,6 +14,13 @@
 #                                  container (retry after a failed Bitwarden
 #                                  unlock / postCreate, no rebuild needed)
 #   ./.devcontainer/dc exec ...   run a one-off command inside
+#   ./.devcontainer/dc codex-push
+#                                  upload the container's ~/.codex/auth.json to
+#                                  the Bitwarden 'codex-auth-token' Notes
+#   ./.devcontainer/dc codex-pull --force
+#                                  overwrite the container's ~/.codex/auth.json
+#                                  from the vault (--force required — clobbers a
+#                                  possibly live, already-refreshed local token)
 #   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
 #   ./.devcontainer/dc sentinel-update
 #                                  pull + recreate usage-sentinel (data kept)
@@ -228,6 +235,15 @@ case "$cmd" in
     # idempotent, and `devcontainer exec` attaches an interactive terminal,
     # which the Bitwarden unlock prompts need.
     devcontainer exec --workspace-folder "$ROOT" /opt/agent-devcontainer/setup-agents.sh
+    ;;
+  codex-push|codex-pull)
+    # Codex-auth sync. The work runs INSIDE the container (that's where `bw`
+    # and the ~/.codex volume live) — `dc` only dispatches, like `setup`, which
+    # also relies on `devcontainer exec` attaching an interactive terminal for
+    # the Bitwarden unlock prompt. The `codex-{push,pull}` command name maps to
+    # the helper's `{push,pull}` mode.
+    devcontainer exec --workspace-folder "$ROOT" \
+      /opt/agent-devcontainer/codex-auth-sync.sh "${cmd#codex-}" "$@"
     ;;
   exec)
     devcontainer exec --workspace-folder "$ROOT" "$@"

@@ -78,7 +78,11 @@ RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh install-claude-hook.sh gh-app-token.sh git-credential-github-app.sh \
+        codex-auth-sync.sh \
         /opt/agent-devcontainer/
+# Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
+# codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
+COPY lib/bw-session.sh /opt/agent-devcontainer/lib/bw-session.sh
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
 COPY claude-settings.json /opt/agent-devcontainer/claude-settings.json
@@ -86,6 +90,7 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/install-claude-hook.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
+        /opt/agent-devcontainer/codex-auth-sync.sh \
         /opt/agent-devcontainer/githooks/pre-push
 
 # Project scaffolder + the two per-project files it emits.
