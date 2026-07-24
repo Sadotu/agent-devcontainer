@@ -255,6 +255,23 @@ the Notes of a Bitwarden item named `codex-auth-token`, or run
 `codex login --device-auth` once inside the project container. Do not use these
 project-worker paths as substitutes for Sentinel's separate provider login.
 
+### Syncing Codex auth across containers
+
+Codex refresh tokens rotate on use, so keeping the `codex-auth-token` vault item
+current means pushing a freshly-refreshed token up, and any container pulling it
+must be able to overwrite its own (possibly stale) copy. `dc setup` only seeds
+`~/.codex/auth.json` when it is missing, so two `dc` subcommands drive the sync
+(both run the work inside the container, where `bw` and the `~/.codex` volume
+live):
+
+- `dc codex-push` — validate the running container's `~/.codex/auth.json`
+  (`.tokens.refresh_token` must be present) and write it to the
+  `codex-auth-token` item's Notes.
+- `dc codex-pull --force` — overwrite the container's `~/.codex/auth.json` from
+  that vault item. `--force` is required: it clobbers a possibly live,
+  already-refreshed local token, and dropping a stale vault copy over a fresher
+  local one invalidates the working session.
+
 ## Repository access (GitHub App)
 
 The container authenticates to GitHub as the **`container-coding-agent`
