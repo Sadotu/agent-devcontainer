@@ -21,8 +21,15 @@ source "$SCRIPT_DIR/lib/bw-session.sh"
 CODEX_AUTH="${CODEX_AUTH:-$HOME/.codex/auth.json}"
 # Same well-known item (and override) setup-agents.sh seeds from.
 CODEX_ITEM="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
+tmp_auth=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+cleanup() {
+  [ -z "$tmp_auth" ] || rm -f -- "$tmp_auth"
+  bw_relock_if_ours
+}
+trap cleanup EXIT
 
 usage() {
   cat >&2 <<EOF
@@ -57,7 +64,6 @@ do_push() {
     || die "Failed to write Notes to Bitwarden item '$CODEX_ITEM'."
   echo "Pushed $CODEX_AUTH to Bitwarden item '$CODEX_ITEM'."
 
-  bw_relock_if_ours
 }
 
 do_pull() {
@@ -69,12 +75,15 @@ do_pull() {
   codex_auth_is_valid "$notes" \
     || die "'$CODEX_ITEM' Notes are not valid Codex auth JSON — refusing to overwrite $CODEX_AUTH."
 
-  mkdir -p "$(dirname "$CODEX_AUTH")"
-  printf '%s\n' "$notes" >"$CODEX_AUTH"
-  chmod 600 "$CODEX_AUTH"
+  local auth_dir
+  auth_dir="$(dirname "$CODEX_AUTH")"
+  mkdir -p "$auth_dir"
+  tmp_auth="$(mktemp "$auth_dir/.auth.json.tmp.XXXXXX")"
+  chmod 600 "$tmp_auth"
+  printf '%s\n' "$notes" >"$tmp_auth"
+  mv -f -- "$tmp_auth" "$CODEX_AUTH"
+  tmp_auth=""
   echo "Pulled Bitwarden item '$CODEX_ITEM' into $CODEX_AUTH (overwritten)."
-
-  bw_relock_if_ours
 }
 
 mode="${1:-}"

@@ -32,6 +32,12 @@ case "$1 ${2:-}" in
     [ "$3" = "$EXPECT_ITEM" ] || exit 1
     cat "$VAULT_NOTES_FILE" 2>/dev/null || true
     ;;
+  "login --check")
+    exit 0
+    ;;
+  "unlock ")
+    echo 'export BW_SESSION="owned-session"'
+    ;;
   "encode ")
     base64 -w0
     ;;
@@ -39,8 +45,7 @@ case "$1 ${2:-}" in
     base64 -d | jq -r '.notes' >"$VAULT_NOTES_FILE"
     ;;
   "lock ")
-    echo "UNEXPECTED bw lock (caller-provided session must not be relocked)" >&2
-    exit 7
+    printf 'locked\n' >"$LOCK_FILE"
     ;;
   *)
     echo "UNEXPECTED bw call: $*" >&2
@@ -49,9 +54,19 @@ case "$1 ${2:-}" in
 esac
 EOF
 chmod +x "$TMP/bin/bw"
+cat >"$TMP/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${RUN_FAIL_MV:-false}" = true ]; then
+  exit 7
+fi
+exec /usr/bin/mv "$@"
+EOF
+chmod +x "$TMP/bin/mv"
 export PATH="$TMP/bin:$PATH"
 export EXPECT_ITEM='codex-auth-token'
 export BW_SESSION='fake-session'   # ensure_bw_session reuses this, no unlock
+export RUN_FAIL_MV=false
 
 # Each case runs in a fresh sandbox: its own CODEX_AUTH path + vault file.
 run_sync() {
@@ -59,8 +74,9 @@ run_sync() {
   local local_contents="$1" vault_contents="$2"; shift 2
   CODEX_AUTH="$TMP/auth.json"
   VAULT_NOTES_FILE="$TMP/vault-notes"
-  export CODEX_AUTH VAULT_NOTES_FILE
-  rm -f "$CODEX_AUTH" "$VAULT_NOTES_FILE"
+  LOCK_FILE="$TMP/bw-locked"
+  export CODEX_AUTH VAULT_NOTES_FILE LOCK_FILE
+  rm -f "$CODEX_AUTH" "$VAULT_NOTES_FILE" "$LOCK_FILE" "$TMP"/.auth.json.tmp.*
   [ "$local_contents" = '-' ] || printf '%s' "$local_contents" >"$CODEX_AUTH"
   [ "$vault_contents" = '-' ] || printf '%s' "$vault_contents" >"$VAULT_NOTES_FILE"
   set +e
@@ -72,6 +88,7 @@ run_sync() {
 run_sync "$VALID_AUTH" "$OTHER_VALID" push
 [ "$STATUS" -eq 0 ] || fail "push valid: expected success, got $STATUS ($OUT)"
 [ "$(cat "$VAULT_NOTES_FILE")" = "$VALID_AUTH" ] || fail "push valid: vault Notes not updated to local auth"
+[ ! -e "$LOCK_FILE" ] || fail "push valid: caller-provided session must not be relocked"
 
 # --- push: invalid local auth.json -> refuse, vault untouched ----------------
 run_sync "$INVALID_AUTH" "$OTHER_VALID" push
@@ -98,6 +115,25 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" pull
 run_sync "$VALID_AUTH" "$INVALID_AUTH" pull --force
 [ "$STATUS" -ne 0 ] || fail "pull invalid-vault: expected failure"
 [ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull invalid-vault: local auth must be untouched"
+
+# --- pull replacement failure -> old local auth preserved -------------------
+RUN_FAIL_MV=true
+export RUN_FAIL_MV
+run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
+RUN_FAIL_MV=false
+export RUN_FAIL_MV
+[ "$STATUS" -ne 0 ] || fail "pull failed replace: expected failure"
+[ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull failed replace: old local auth must survive"
+if compgen -G "$TMP/.auth.json.tmp.*" >/dev/null; then
+  fail "pull failed replace: temporary auth file must be cleaned up"
+fi
+
+# --- failure after helper-owned unlock -> vault relocked ---------------------
+unset BW_SESSION
+run_sync "$VALID_AUTH" "$INVALID_AUTH" pull --force
+[ "$STATUS" -ne 0 ] || fail "pull invalid owned session: expected failure"
+[ -f "$LOCK_FILE" ] || fail "pull invalid owned session: vault must be relocked"
+export BW_SESSION='fake-session'
 
 # --- unknown mode -> usage/nonzero -------------------------------------------
 run_sync "$VALID_AUTH" "$OTHER_VALID" frobnicate
