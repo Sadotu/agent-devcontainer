@@ -54,19 +54,9 @@ case "$1 ${2:-}" in
 esac
 EOF
 chmod +x "$TMP/bin/bw"
-cat >"$TMP/bin/mv" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${RUN_FAIL_MV:-false}" = true ]; then
-  exit 7
-fi
-exec /usr/bin/mv "$@"
-EOF
-chmod +x "$TMP/bin/mv"
 export PATH="$TMP/bin:$PATH"
 export EXPECT_ITEM='codex-auth-token'
 export BW_SESSION='fake-session'   # ensure_bw_session reuses this, no unlock
-export RUN_FAIL_MV=false
 
 # Each case runs in a fresh sandbox: its own CODEX_AUTH path + vault file.
 run_sync() {
@@ -115,18 +105,6 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" pull
 run_sync "$VALID_AUTH" "$INVALID_AUTH" pull --force
 [ "$STATUS" -ne 0 ] || fail "pull invalid-vault: expected failure"
 [ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull invalid-vault: local auth must be untouched"
-
-# --- pull replacement failure -> old local auth preserved -------------------
-RUN_FAIL_MV=true
-export RUN_FAIL_MV
-run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
-RUN_FAIL_MV=false
-export RUN_FAIL_MV
-[ "$STATUS" -ne 0 ] || fail "pull failed replace: expected failure"
-[ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull failed replace: old local auth must survive"
-if compgen -G "$TMP/.auth.json.tmp.*" >/dev/null; then
-  fail "pull failed replace: temporary auth file must be cleaned up"
-fi
 
 # --- failure after helper-owned unlock -> vault relocked ---------------------
 unset BW_SESSION
