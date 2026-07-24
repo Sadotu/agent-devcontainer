@@ -391,7 +391,9 @@ fi
 # over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
 # the item name (name or GUID).
 CODEX_AUTH="$HOME/.codex/auth.json"
-if [ ! -r "$CODEX_AUTH" ] && ensure_bw_session besteffort; then
+if [ -r "$CODEX_AUTH" ]; then
+  echo "    Codex CLI auth: present and already seeded; no fetch needed."
+elif ensure_bw_session besteffort; then
   codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
   codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
   if [ -n "$codex_notes" ]; then
