@@ -113,6 +113,14 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
+- Claude Connectors are account-level, riding along with whatever
+  `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
+  Forwarding the host token in means a host-enabled GitHub connector would
+  let agents push/PR as *you*, not the GitHub App. `setup-agents.sh` denies
+  `mcp__github__*` in `~/.claude/settings.json` (merged, every run) and
+  strips any `[mcp_servers.*github*]` from Codex's `config.toml` (no
+  ambient connector there, but same opt-in-config risk). Needs
+  `dc rebuild`, not `dc setup` — it's baked into the image.
 
 ### GitHub App auth
 

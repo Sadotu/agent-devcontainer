@@ -81,6 +81,7 @@ COPY setup-agents.sh install-claude-hook.sh gh-app-token.sh git-credential-githu
         /opt/agent-devcontainer/
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
+COPY claude-settings.json /opt/agent-devcontainer/claude-settings.json
 RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/install-claude-hook.sh \
         /opt/agent-devcontainer/gh-app-token.sh \

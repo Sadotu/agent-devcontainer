@@ -93,6 +93,47 @@ git config --global credential.https://github.com.helper \
   "!$TOOLDIR/git-credential-github-app.sh"
 # ------------------------------------------------------------------------------
 
+# --- Block GitHub access via MCP connectors (App-only, not "as you") ---------
+# Claude Code's account-level Connectors (claude.ai Settings -> Connectors)
+# ride along with whatever CLAUDE_CODE_OAUTH_TOKEN authenticates the session —
+# they are NOT scoped per-project or per-devcontainer. Since devcontainer.json
+# forwards the host's own token in, a GitHub connector enabled on the host
+# account would silently be available in here too, and any push/PR made
+# through it authenticates as the human account, not the GitHub App above —
+# defeating the whole point of the App identity. Force every rebuild to deny
+# it (idempotent merge, not overwrite: preserves anything else already in
+# ~/.claude/settings.json).
+echo "==> Blocking GitHub MCP connector for Claude Code (App-only GitHub auth)"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude"
+[ -s "$CLAUDE_SETTINGS" ] || echo '{}' > "$CLAUDE_SETTINGS"
+if jq -e . "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
+  tmp_settings="$(mktemp)"
+  jq -s '.[0] * {permissions: {deny: (((.[0].permissions.deny // []) + (.[1].permissions.deny // [])) | unique)}}' \
+    "$CLAUDE_SETTINGS" "$TOOLDIR/claude-settings.json" > "$tmp_settings" \
+    && mv "$tmp_settings" "$CLAUDE_SETTINGS"
+  echo "    mcp__github__* denied in ~/.claude/settings.json."
+else
+  echo "WARNING: ~/.claude/settings.json is not valid JSON — skipping connector-deny merge." >&2
+fi
+
+# Codex has no equivalent ambient "connector" (its MCP servers are opt-in,
+# declared per-entry in config.toml — nothing is inherited from an account),
+# so the equivalent control is stripping any github MCP server entry outright
+# rather than denying a tool pattern. Defensive/idempotent: no-ops when none
+# exists, which is the expected case.
+CODEX_CONFIG="$HOME/.codex/config.toml"
+if [ -f "$CODEX_CONFIG" ] && grep -qiE '^\[mcp_servers\..*github.*\]' "$CODEX_CONFIG"; then
+  echo "==> Removing github MCP server entry from ~/.codex/config.toml (App-only GitHub auth)"
+  tmp_config="$(mktemp)"
+  awk '
+    /^\[/ { skip = (tolower($0) ~ /^\[mcp_servers\..*github.*\]/) ? 1 : 0 }
+    !skip { print }
+  ' "$CODEX_CONFIG" > "$tmp_config" && mv "$tmp_config" "$CODEX_CONFIG"
+  echo "    Removed."
+fi
+# ------------------------------------------------------------------------------
+
 echo "==> Secrets bootstrap (Bitwarden)"
 # GitHub App credentials are REQUIRED — without them no App token can be
 # minted, so nothing in this container can push, PR, or use `gh`. If they
