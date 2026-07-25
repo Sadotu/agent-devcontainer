@@ -74,6 +74,11 @@ RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex \
         /home/vscode/.config /home/vscode/.history
 
+# setup-agents.sh runs as vscode and needs a writable location for its
+# readiness marker. Keep /run itself root-owned; delegate only this directory.
+RUN mkdir -p -m 0755 /run/agent-devcontainer \
+    && chown vscode:vscode /run/agent-devcontainer
+
 # Devcontainer tooling shared by every project — postCreateCommand in each
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
