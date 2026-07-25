@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB="$ROOT/.devcontainer/lib/setup-marker.sh"
 SETUP="$ROOT/.devcontainer/setup-agents.sh"
 DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
+README="$ROOT/README.md"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -78,5 +79,9 @@ grep -Eq 'mkdir -p( -m [0-9]+)? /run/agent-devcontainer' "$DOCKERFILE" \
   || fail "Dockerfile does not create marker directory"
 grep -Eq 'chown( -R)? vscode:vscode /run/agent-devcontainer' "$DOCKERFILE" \
   || fail "Dockerfile does not give vscode ownership of marker directory"
+
+# --- public documentation names the default readiness contract ---
+grep -Fq '/run/agent-devcontainer/agent-setup-complete' "$README" \
+  || fail "README does not document default marker path"
 
 echo "PASS: setup completion marker"
