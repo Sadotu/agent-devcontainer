@@ -6,6 +6,8 @@ HELPER="$ROOT/.devcontainer/dotagents-install.sh"
 SETUP="$ROOT/.devcontainer/setup-agents.sh"
 DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
 README="$ROOT/README.md"
+LOCK="$ROOT/agents.lock"
+GITIGNORE="$ROOT/.gitignore"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -30,6 +32,12 @@ assert_file_not_contains() {
   return 0
 }
 
+# Routine setup depends on a committed lock that Git must not ignore.
+[[ -f "$LOCK" ]] || fail "$LOCK does not exist"
+git -C "$ROOT" ls-files --error-unmatch agents.lock >/dev/null 2>&1 || \
+  fail "agents.lock is not tracked"
+assert_file_not_contains '/agents.lock' "$GITIGNORE"
+
 # Runtime setup and image build must both integrate the locked installer.
 assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
@@ -53,6 +61,25 @@ case " $* " in
 esac
 FAKE_NPX
 chmod +x "$TMP/bin/npx"
+
+# A fresh clone seeded with repository config and lock must remain byte-clean
+# after routine setup.
+mkdir "$TMP/clean-project"
+cp "$ROOT/.devcontainer/agents.toml" "$TMP/clean-project/agents.toml"
+cp "$LOCK" "$TMP/clean-project/agents.lock"
+cp "$LOCK" "$TMP/clean-project/agents.lock.expected"
+git -C "$TMP/clean-project" init -q
+git -C "$TMP/clean-project" add agents.toml agents.lock agents.lock.expected
+git -C "$TMP/clean-project" -c user.name=Test -c user.email=test@example.invalid \
+  commit -qm 'Seed locked project'
+DOTAGENTS_CALL_LOG="$TMP/clean-project.calls.log" PATH="$TMP/bin:$PATH" \
+  bash "$HELPER" "$TMP/clean-project" "$ROOT/.devcontainer"
+printf '%s\n' '-y @sentry/dotagents@1.17.0 install --frozen' > \
+  "$TMP/clean-project.calls.expected"
+assert_file_equals "$TMP/clean-project.calls.expected" "$TMP/clean-project.calls.log"
+assert_file_equals "$TMP/clean-project/agents.lock.expected" "$TMP/clean-project/agents.lock"
+[[ -z "$(git -C "$TMP/clean-project" status --porcelain)" ]] || \
+  fail "routine install dirtied clean project"
 
 run_helper() {
   local workspace="$1"
