@@ -16,7 +16,7 @@
 # AGENT_SETUP_MARKER overrides it, which is how the tests avoid the real /run.
 
 setup_marker_path() {
-  printf '%s' "${AGENT_SETUP_MARKER:-/run/agent-setup-complete}"
+  printf '%s' "${AGENT_SETUP_MARKER:-/run/agent-devcontainer/agent-setup-complete}"
 }
 
 # Remove any stale marker. Idempotent: no error when it does not exist.

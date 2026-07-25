@@ -163,8 +163,9 @@ only the literal command `start work` and invokes `issue-orchestrator` with no a
 
 ### Setup readiness marker
 
-`setup-agents.sh` publishes `/run/agent-setup-complete` as its final successful
-action. This file is the **readiness contract** consumed by
+`setup-agents.sh` publishes
+`/run/agent-devcontainer/agent-setup-complete` as its final successful action.
+This file is the **readiness contract** consumed by
 [`issue-orchestrator`](https://github.com/Sadotu/issue-orchestrator) (issue #31,
 reader PR #46): the orchestrator only admits a worker once the marker exists, so
 workers never launch while `setup-agents.sh` is still reinstalling the global

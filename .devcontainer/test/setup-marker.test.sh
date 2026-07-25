@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB="$ROOT/.devcontainer/lib/setup-marker.sh"
 SETUP="$ROOT/.devcontainer/setup-agents.sh"
+DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
+README="$ROOT/README.md"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -13,7 +15,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- path resolution: default and override ---
 ( unset AGENT_SETUP_MARKER; source "$LIB"
-  [[ "$(setup_marker_path)" == "/run/agent-setup-complete" ]] ) \
+  [[ "$(setup_marker_path)" == "/run/agent-devcontainer/agent-setup-complete" ]] ) \
   || fail "default marker path wrong"
 ( AGENT_SETUP_MARKER="$TMP/custom"; source "$LIB"
   [[ "$(setup_marker_path)" == "$TMP/custom" ]] ) \
@@ -71,5 +73,15 @@ checklist="$(grep -n 'Manual checklist' "$SETUP" | head -1 | cut -d: -f1)"
 [[ -n "$complete_line" ]] || fail "setup-agents.sh never calls setup_marker_complete"
 [[ "$reset_line" -lt "$first_work" ]] || fail "setup_marker_reset not called before first work step"
 [[ "$complete_line" -gt "$checklist" ]] || fail "setup_marker_complete not the final action (before checklist)"
+
+# --- image provides a writable runtime directory without changing /run ---
+grep -Eq 'mkdir -p( -m [0-9]+)? /run/agent-devcontainer' "$DOCKERFILE" \
+  || fail "Dockerfile does not create marker directory"
+grep -Eq 'chown( -R)? vscode:vscode /run/agent-devcontainer' "$DOCKERFILE" \
+  || fail "Dockerfile does not give vscode ownership of marker directory"
+
+# --- public documentation names the default readiness contract ---
+grep -Fq '/run/agent-devcontainer/agent-setup-complete' "$README" \
+  || fail "README does not document default marker path"
 
 echo "PASS: setup completion marker"
