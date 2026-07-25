@@ -24,6 +24,12 @@ assert_file_contains() {
   grep -Fq -- "$expected" "$actual" || fail "$actual does not contain: $expected"
 }
 
+assert_file_not_contains() {
+  local unexpected="$1" actual="$2"
+  grep -Fq -- "$unexpected" "$actual" && fail "$actual contains stale text: $unexpected"
+  return 0
+}
+
 # Runtime setup and image build must both integrate the locked installer.
 assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
@@ -31,7 +37,9 @@ assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFI
 
 # Documentation must distinguish routine frozen installs from explicit upgrades.
 assert_file_contains 'Routine setup uses the committed `agents.lock` revisions with a frozen install.' "$README"
+assert_file_contains 'From the project root, run:' "$README"
 assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer' "$README"
+assert_file_not_contains '`dotagents install` picks up' "$README"
 
 mkdir -p "$TMP/bin" "$TMP/tool"
 printf 'skills = ["default"]\n' > "$TMP/tool/agents.toml"

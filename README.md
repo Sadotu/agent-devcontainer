@@ -426,7 +426,7 @@ Three distribution paths, depending on what the skill is:
 
 Routine setup uses the committed `agents.lock` revisions with a frozen install.
 The first install creates `agents.lock`. To update skill revisions, maintainers
-run:
+use the explicit upgrade mode. From the project root, run:
 
 ```bash
 /opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer
@@ -503,8 +503,10 @@ locally to test changes before publishing. Workflow:
 3. Verify inside: `claude --version`, `codex --version`,
    `/opt/agent-devcontainer/gh-app-token.sh` (needs this repo's own App
    credentials set up per [Repository access](#repository-access-github-app)
-   if you want to test that path), `dotagents install` picks up
-   `agent-skills`. Also smoke-test the scaffolder against a throwaway dir:
+   if you want to test that path), and
+   `/opt/agent-devcontainer/dotagents-install.sh "$PWD" /opt/agent-devcontainer`
+   completes its routine frozen install. Also smoke-test the scaffolder against
+   a throwaway dir:
    `docker run --rm -it -v /tmp/scaffold-test:/out <built-image-tag> init`
    (make the dir first) and confirm it writes a valid `.devcontainer/`.
 4. Push to `main` (via PR). `.github/workflows/publish-image.yml` builds and
