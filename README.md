@@ -424,6 +424,16 @@ Three distribution paths, depending on what the skill is:
   put it in that project's own `.agents/skills/`. No need to route it through
   `agent-skills` or this image.
 
+Routine setup uses the committed `agents.lock` revisions with a frozen install.
+The first install creates `agents.lock`. To update skill revisions, maintainers
+run:
+
+```bash
+/opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer
+```
+
+Review and commit the resulting `agents.lock` changes.
+
 ## Working on issues safely
 
 1. `git checkout -b agent/<issue-number>-<short-description>`
@@ -507,5 +517,6 @@ locally to test changes before publishing. Workflow:
    every consumer machine will additionally need `docker login ghcr.io`.
 
 `dotagents`-managed skills (`Sadotu/agent-skills`) update independently of
-the image — edit that repo directly, no rebuild/publish needed here; the
-next `setup-agents.sh` run on any project picks it up.
+the image — edit that repo directly, no rebuild/publish needed here. Projects
+pick up new revisions after a maintainer explicitly upgrades and commits their
+`agents.lock`.

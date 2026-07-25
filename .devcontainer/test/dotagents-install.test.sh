@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HELPER="$ROOT/.devcontainer/dotagents-install.sh"
 SETUP="$ROOT/.devcontainer/setup-agents.sh"
 DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
+README="$ROOT/README.md"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -27,6 +28,10 @@ assert_file_contains() {
 assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
 assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFILE"
+
+# Documentation must distinguish routine frozen installs from explicit upgrades.
+assert_file_contains 'Routine setup uses the committed `agents.lock` revisions with a frozen install.' "$README"
+assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer' "$README"
 
 mkdir -p "$TMP/bin" "$TMP/tool"
 printf 'skills = ["default"]\n' > "$TMP/tool/agents.toml"
