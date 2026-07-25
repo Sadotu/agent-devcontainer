@@ -83,7 +83,7 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh install-claude-hook.sh gh-app-token.sh git-credential-github-app.sh \
-        codex-auth-sync.sh \
+        codex-auth-sync.sh dotagents-install.sh \
         /opt/agent-devcontainer/
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
 # codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
@@ -99,6 +99,7 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/codex-auth-sync.sh \
+        /opt/agent-devcontainer/dotagents-install.sh \
         /opt/agent-devcontainer/githooks/pre-push
 
 # Project scaffolder + the two per-project files it emits.

@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HELPER="$ROOT/.devcontainer/dotagents-install.sh"
+SETUP="$ROOT/.devcontainer/setup-agents.sh"
+DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -15,6 +17,16 @@ assert_file_equals() {
   local expected="$1" actual="$2"
   cmp -s "$expected" "$actual" || fail "$actual does not match $expected"
 }
+
+assert_file_contains() {
+  local expected="$1" actual="$2"
+  grep -Fq -- "$expected" "$actual" || fail "$actual does not contain: $expected"
+}
+
+# Runtime setup and image build must both integrate the locked installer.
+assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
+assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
+assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFILE"
 
 mkdir -p "$TMP/bin" "$TMP/tool"
 printf 'skills = ["default"]\n' > "$TMP/tool/agents.toml"
