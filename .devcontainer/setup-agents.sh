@@ -11,6 +11,17 @@ WORKSPACE="/workspaces/$PROJECT_NAME"
 TOOLDIR="/opt/agent-devcontainer"
 BASHRC="$HOME/.bashrc"
 
+# Resolve this script's own dir so its sourceable libs work both baked into
+# the image (/opt/agent-devcontainer) and from the repo checkout (tests).
+_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Readiness marker (issue-orchestrator readiness contract, issue #31 / PR #46):
+# remove any stale marker before setup begins; it is re-created only as this
+# script's final successful action (end of file). Sourced, not executed.
+# shellcheck source=lib/setup-marker.sh
+source "$_SETUP_DIR/lib/setup-marker.sh"
+setup_marker_reset
+
 echo "==> Fixing ownership of persisted config volumes"
 # Named volumes are seeded vscode-owned by the Dockerfile (Docker copies the
 # image path's ownership into a fresh volume on first mount). runArgs sets
@@ -159,7 +170,6 @@ echo "==> Secrets bootstrap (Bitwarden)"
 # same Codex-auth validity check (see codex-auth-sync.sh). Resolve it relative
 # to this script so it works both baked in the image (/opt/agent-devcontainer)
 # and from the repo checkout (tests).
-_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/bw-session.sh
 source "$_SETUP_DIR/lib/bw-session.sh"
 
@@ -451,3 +461,9 @@ fi
 echo "4. Do NOT run 'gh auth login' or 'gh auth setup-git' — this container"
 echo "   uses the GitHub App exclusively (see 'GitHub App auth' in CLAUDE.md"
 echo "   / AGENTS.md). 'gh'/'git push' work automatically once step 2 is done."
+
+# Final successful action: publish the readiness marker. Reaching this line
+# means every required step above succeeded (any required failure aborts under
+# set -e / bw_fail before here), so the marker's existence == setup complete.
+echo "==> Publishing readiness marker: $(setup_marker_path)"
+setup_marker_complete

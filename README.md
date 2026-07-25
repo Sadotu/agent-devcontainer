@@ -161,6 +161,25 @@ Inside the shell, `start work` explicitly launches the bundled
 `issue-orchestrator`. No agent starts automatically. The shell function accepts
 only the literal command `start work` and invokes `issue-orchestrator` with no arguments.
 
+### Setup readiness marker
+
+`setup-agents.sh` publishes `/run/agent-setup-complete` as its final successful
+action. This file is the **readiness contract** consumed by
+[`issue-orchestrator`](https://github.com/Sadotu/issue-orchestrator) (issue #31,
+reader PR #46): the orchestrator only admits a worker once the marker exists, so
+workers never launch while `setup-agents.sh` is still reinstalling the global
+agent CLIs.
+
+- The marker lives under `/run`, so a container **rebuild** clears it and setup
+  re-publishes it; a **stop/start** of the same container retains it (setup
+  already completed).
+- It is written atomically (temp file + rename) and world-readable (`644`), so
+  the orchestrator — possibly a different user — always reads a complete file.
+- A failed `setup-agents.sh` leaves the marker **absent** (`set -e` aborts
+  before the final write), which correctly holds workers back.
+- Override the path with `AGENT_SETUP_MARKER` (used by the test suite to avoid
+  the host's real `/run`).
+
 ### Shared Usage Sentinel
 
 Every project joins Docker network `agent-services` and receives
