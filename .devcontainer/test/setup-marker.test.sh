@@ -59,8 +59,12 @@ set -e
 
 # --- structural guard on setup-agents.sh wiring ---
 grep -q 'source .*lib/setup-marker.sh' "$SETUP" || fail "setup-agents.sh does not source the marker lib"
-reset_line="$(grep -n '^setup_marker_reset' "$SETUP" | head -1 | cut -d: -f1)"
-complete_line="$(grep -n '^setup_marker_complete' "$SETUP" | head -1 | cut -d: -f1)"
+# `|| true`: a missing pattern is exactly what the `[[ -n ... ]]` guards below
+# are meant to report — without it, grep's exit 1 under `set -o pipefail` would
+# abort via `set -e` before the descriptive `fail` message (the CLAUDE.md
+# trailing-grep pipefail gotcha).
+reset_line="$(grep -n '^setup_marker_reset' "$SETUP" | head -1 | cut -d: -f1 || true)"
+complete_line="$(grep -n '^setup_marker_complete' "$SETUP" | head -1 | cut -d: -f1 || true)"
 first_work="$(grep -n 'Fixing ownership of persisted config volumes' "$SETUP" | head -1 | cut -d: -f1)"
 checklist="$(grep -n 'Manual checklist' "$SETUP" | head -1 | cut -d: -f1)"
 [[ -n "$reset_line" ]] || fail "setup-agents.sh never calls setup_marker_reset"
