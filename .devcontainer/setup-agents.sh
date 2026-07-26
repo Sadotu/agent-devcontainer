@@ -38,7 +38,7 @@ for cli in claude codex gh git node npm jq rg curl unzip; do
 done
 
 echo "==> Removing legacy Claude usage-gate hook"
-"$TOOLDIR/remove-legacy-usage-gate-hook.sh"
+"$TOOLDIR/remove-legacy-usage-gate-hook.sh" || echo "WARNING: legacy usage-gate hook cleanup failed (see above) — continuing setup." >&2
 
 echo "==> Git safety configuration"
 git config --global --add safe.directory "$WORKSPACE"

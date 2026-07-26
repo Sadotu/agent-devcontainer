@@ -186,10 +186,15 @@ agent CLIs.
 Earlier images installed a Claude `PreToolUse` hook into
 `~/.claude/settings.json` that blocked tool use outside an Issue
 Orchestrator worker. That hook is gone — usage enforcement now lives
-entirely in the machine-wide Sentinel described below. `dc setup` and
-rebuilds now *remove* any leftover legacy hook entry from an existing
-persisted Claude settings volume instead of reinstalling it; every other
-hook, permission, plugin, and setting in that file is left untouched.
+entirely in the machine-wide Sentinel described below. Run
+`./.devcontainer/dc rebuild` once to pick up the image that carries the
+removal logic — a plain `dc setup` against an already-running container
+still executes whatever `setup-agents.sh` that container's current image
+baked in, so it won't clean up an old install until the image itself is
+updated. From then on, every rebuild and `dc setup` removes any leftover
+legacy hook entry from an existing persisted Claude settings volume
+instead of reinstalling it; every other hook, permission, plugin, and
+setting in that file is left untouched.
 
 Claude loads hooks once at session start, so an **already-running** Claude
 process keeps the stale hook in memory even after settings are cleaned up

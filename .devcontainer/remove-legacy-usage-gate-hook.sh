@@ -30,7 +30,7 @@ const legacyCommands = new Set([
 const entries = Array.isArray(settings.hooks?.PreToolUse) ? settings.hooks.PreToolUse : [];
 settings.hooks ??= {};
 settings.hooks.PreToolUse = entries.flatMap((entry) => {
-  if (entry?.matcher !== "Agent" || !Array.isArray(entry.hooks)) return [entry];
+  if (!Array.isArray(entry?.hooks)) return [entry];
   const hooks = entry.hooks.filter((hook) => !legacyCommands.has(hook?.command));
   return hooks.length ? [{ ...entry, hooks }] : [];
 });
@@ -38,5 +38,8 @@ settings.hooks.PreToolUse = entries.flatMap((entry) => {
 process.stdout.write(`${JSON.stringify(settings, null, 2)}\n`);
 EOF
 
+if cmp -s "$settings_path" "$settings_tmp"; then
+  exit 0
+fi
 mv "$settings_tmp" "$settings_path"
 trap - EXIT

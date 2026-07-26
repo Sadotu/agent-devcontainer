@@ -92,4 +92,81 @@ const settings = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (settings.permissions?.allow?.[0] !== "Read") throw new Error("permissions.allow[0] not preserved");
 EOF
 
+# --- Case 6: legacy command under a non-"Agent" matcher is still removed ---
+HOME="$TMP/home5"
+mkdir -p "$HOME/.claude"
+cat >"$HOME/.claude/settings.json" <<'EOF'
+{
+  "permissions": { "allow": ["Read"] },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/pretooluse-usage-gate.mjs\"" }]
+      },
+      {
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": "node \"/usr/lib/node_modules/issue-orchestrator/hooks/pretooluse-usage-gate.mjs\"" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "existing-hook" }]
+      }
+    ]
+  }
+}
+EOF
+
+HOME="$HOME" bash "$REMOVER"
+
+node - "$HOME/.claude/settings.json" <<'EOF' || fail "case 6: legacy command under non-Agent matcher not removed"
+const fs = require("fs");
+const settings = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (settings.permissions?.allow?.[0] !== "Read") throw new Error("unrelated settings key lost");
+const entries = settings.hooks?.PreToolUse ?? [];
+const commands = entries.flatMap((e) => e.hooks ?? []).map((h) => h.command);
+if (commands.includes('node "$CLAUDE_PROJECT_DIR/hooks/pretooluse-usage-gate.mjs"')) {
+  throw new Error("stale legacy command (matcher: Bash) still present");
+}
+if (commands.includes('node "/usr/lib/node_modules/issue-orchestrator/hooks/pretooluse-usage-gate.mjs"')) {
+  throw new Error("absolute legacy command (matcher: \"\") still present");
+}
+if (!commands.includes("existing-hook")) throw new Error("unrelated Bash hook lost");
+if (entries.length !== 1) throw new Error(`expected 1 surviving PreToolUse entry, got ${entries.length}`);
+EOF
+
+# --- Case 7: no legacy commands present leaves the file byte-for-byte untouched ---
+# Written pre-formatted to match Node's JSON.stringify(obj, null, 2) output
+# exactly (2-space indent, one array element per line) so a real "nothing to
+# do" run can be verified byte-for-byte rather than just semantically equal.
+HOME="$TMP/home6"
+mkdir -p "$HOME/.claude"
+cat >"$HOME/.claude/settings.json" <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Read"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "existing-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+sha_before="$(sha256sum "$HOME/.claude/settings.json" | awk '{print $1}')"
+HOME="$HOME" bash "$REMOVER"
+sha_after="$(sha256sum "$HOME/.claude/settings.json" | awk '{print $1}')"
+[[ "$sha_before" == "$sha_after" ]] || fail "case 7: settings.json rewritten even though nothing changed"
+
 echo "PASS: legacy Claude usage-gate hook removal"
