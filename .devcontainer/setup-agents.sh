@@ -37,8 +37,8 @@ for cli in claude codex gh git node npm jq rg curl unzip; do
   command -v "$cli" >/dev/null 2>&1 || echo "WARNING: '$cli' not found on PATH"
 done
 
-echo "==> Claude sub-agent usage gate"
-"$TOOLDIR/install-claude-hook.sh"
+echo "==> Removing legacy Claude usage-gate hook"
+"$TOOLDIR/remove-legacy-usage-gate-hook.sh"
 
 echo "==> Git safety configuration"
 git config --global --add safe.directory "$WORKSPACE"

@@ -82,7 +82,7 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # Devcontainer tooling shared by every project — postCreateCommand in each
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
-COPY setup-agents.sh install-claude-hook.sh gh-app-token.sh git-credential-github-app.sh \
+COPY setup-agents.sh remove-legacy-usage-gate-hook.sh gh-app-token.sh git-credential-github-app.sh \
         codex-auth-sync.sh dotagents-install.sh \
         /opt/agent-devcontainer/
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
@@ -95,7 +95,7 @@ COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
 COPY claude-settings.json /opt/agent-devcontainer/claude-settings.json
 RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
-        /opt/agent-devcontainer/install-claude-hook.sh \
+        /opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/codex-auth-sync.sh \
