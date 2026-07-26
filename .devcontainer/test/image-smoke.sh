@@ -76,7 +76,7 @@ source_test() {
     status=$?
     set -e
     [[ $status -eq 2 ]]
-    [[ $hook_output == *'Usage gate blocked sub-agent start:'* ]]
+    [[ $hook_output == *'Usage gate blocked tool use: invalid_pause_context'* ]]
 
     cat >"$temp_dir/issue-orchestrator" <<'EOF'
 #!/usr/bin/env bash
@@ -145,7 +145,7 @@ image_test() {
     status=$?
     set -e
     [[ $status -eq 2 ]]
-    [[ $output == *'Usage gate blocked sub-agent start:'* ]]
+    [[ $output == *'Usage gate blocked tool use: invalid_pause_context'* ]]
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 
     set +e
