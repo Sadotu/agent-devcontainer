@@ -373,11 +373,9 @@ echo "==> Self-authored skills (dotagents)"
 # Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
 # distributed via dotagents instead of a per-repo file copy — one command
 # symlinks each skill into every tool's expected location (.claude/skills/,
-# Codex's .agents/skills/, ...). The manifest is baked into the image; drop a
-# copy into the workspace (without clobbering a project-customized one) since
-# dotagents reads agents.toml from its working directory, not from a flag.
-cp -n "$TOOLDIR/agents.toml" "$WORKSPACE/agents.toml" 2>/dev/null || true
-(cd "$WORKSPACE" && npx -y @sentry/dotagents install 2>&1 | sed 's/^/    /') || \
+# Codex's .agents/skills/, ...). The helper installs the baked manifest with a
+# pinned dotagents version and preserves an existing lock via frozen mode.
+($TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /') || \
   echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
 
 echo "==> Codex plugins/skills"

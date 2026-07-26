@@ -424,6 +424,16 @@ Three distribution paths, depending on what the skill is:
   put it in that project's own `.agents/skills/`. No need to route it through
   `agent-skills` or this image.
 
+Routine setup uses the committed `agents.lock` revisions with a frozen install.
+The first install creates `agents.lock`. To update skill revisions, maintainers
+use the explicit upgrade mode. From the project root, run:
+
+```bash
+/opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer
+```
+
+Review and commit the resulting `agents.lock` changes.
+
 ## Working on issues safely
 
 1. `git checkout -b agent/<issue-number>-<short-description>`
@@ -493,8 +503,10 @@ locally to test changes before publishing. Workflow:
 3. Verify inside: `claude --version`, `codex --version`,
    `/opt/agent-devcontainer/gh-app-token.sh` (needs this repo's own App
    credentials set up per [Repository access](#repository-access-github-app)
-   if you want to test that path), `dotagents install` picks up
-   `agent-skills`. Also smoke-test the scaffolder against a throwaway dir:
+   if you want to test that path), and
+   `/opt/agent-devcontainer/dotagents-install.sh "$PWD" /opt/agent-devcontainer`
+   completes its routine frozen install. Also smoke-test the scaffolder against
+   a throwaway dir:
    `docker run --rm -it -v /tmp/scaffold-test:/out <built-image-tag> init`
    (make the dir first) and confirm it writes a valid `.devcontainer/`.
 4. Push to `main` (via PR). `.github/workflows/publish-image.yml` builds and
@@ -507,5 +519,6 @@ locally to test changes before publishing. Workflow:
    every consumer machine will additionally need `docker login ghcr.io`.
 
 `dotagents`-managed skills (`Sadotu/agent-skills`) update independently of
-the image — edit that repo directly, no rebuild/publish needed here; the
-next `setup-agents.sh` run on any project picks it up.
+the image — edit that repo directly, no rebuild/publish needed here. Projects
+pick up new revisions after a maintainer explicitly upgrades and commits their
+`agents.lock`.

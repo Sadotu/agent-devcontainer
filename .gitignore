@@ -22,6 +22,6 @@ node_modules/
 # devcontainer — source of truth is .devcontainer/agents.toml.
 /agents.toml
 
-# Dotagents metadata generated during devcontainer setup.
-/agents.lock
+# Dotagents local metadata generated during devcontainer setup. Root agents.lock
+# is committed so routine setup uses reviewed skill revisions.
 /.agents/.gitignore
