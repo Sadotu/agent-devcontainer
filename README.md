@@ -181,6 +181,21 @@ agent CLIs.
 - Override the path with `AGENT_SETUP_MARKER` (used by the test suite to avoid
   the host's real `/run`).
 
+### Legacy per-session usage-gate hook removed
+
+Earlier images installed a Claude `PreToolUse` hook into
+`~/.claude/settings.json` that blocked tool use outside an Issue
+Orchestrator worker. That hook is gone — usage enforcement now lives
+entirely in the machine-wide Sentinel described below. `dc setup` and
+rebuilds now *remove* any leftover legacy hook entry from an existing
+persisted Claude settings volume instead of reinstalling it; every other
+hook, permission, plugin, and setting in that file is left untouched.
+
+Claude loads hooks once at session start, so an **already-running** Claude
+process keeps the stale hook in memory even after settings are cleaned up
+on disk. Restart any Claude process that predates this change once; new
+sessions pick up the cleaned settings automatically.
+
 ### Shared Usage Sentinel
 
 Every project joins Docker network `agent-services` and receives
