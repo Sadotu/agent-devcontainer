@@ -12,6 +12,7 @@ HOME="$TMP/home"
 PACKAGE_ROOT="$TMP/npm/lib/node_modules/issue-orchestrator"
 mkdir -p "$HOME/.claude" "$PACKAGE_ROOT/bin" "$PACKAGE_ROOT/hooks" "$TMP/bin"
 touch "$PACKAGE_ROOT/bin/supervisor.mjs" "$PACKAGE_ROOT/hooks/pretooluse-usage-gate.mjs"
+chmod +x "$PACKAGE_ROOT/bin/supervisor.mjs"
 ln -s "$PACKAGE_ROOT/bin/supervisor.mjs" "$TMP/bin/issue-orchestrator"
 
 cat >"$HOME/.claude/settings.json" <<'EOF'
