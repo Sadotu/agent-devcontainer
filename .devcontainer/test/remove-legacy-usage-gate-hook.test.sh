@@ -77,4 +77,19 @@ mkdir -p "$HOME"
 HOME="$HOME" bash "$REMOVER"
 [[ ! -e "$HOME/.claude" ]] || fail "no-op case created ~/.claude"
 
+# --- Case 5: settings.json with no hooks key (valid settings structure) ---
+HOME="$TMP/home4"
+mkdir -p "$HOME/.claude"
+cat >"$HOME/.claude/settings.json" <<'EOF'
+{"permissions": {"allow": ["Read"]}}
+EOF
+
+HOME="$HOME" bash "$REMOVER"
+
+node - "$HOME/.claude/settings.json" <<'EOF' || fail "case 5: settings.json with no hooks key not handled correctly"
+const fs = require("fs");
+const settings = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (settings.permissions?.allow?.[0] !== "Read") throw new Error("permissions.allow[0] not preserved");
+EOF
+
 echo "PASS: legacy Claude usage-gate hook removal"

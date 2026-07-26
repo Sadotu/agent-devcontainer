@@ -28,6 +28,7 @@ const legacyCommands = new Set([
 ]);
 
 const entries = Array.isArray(settings.hooks?.PreToolUse) ? settings.hooks.PreToolUse : [];
+settings.hooks ??= {};
 settings.hooks.PreToolUse = entries.flatMap((entry) => {
   if (entry?.matcher !== "Agent" || !Array.isArray(entry.hooks)) return [entry];
   const hooks = entry.hooks.filter((hook) => !legacyCommands.has(hook?.command));
