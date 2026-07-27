@@ -58,9 +58,6 @@ source_test() {
     grep -Fq "SHA-256 $expected_sha." "$devcontainer_dir/Dockerfile"
     grep -Fq "COPY vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
-    grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/Dockerfile"
-    grep -Fq '/opt/agent-devcontainer/install-claude-hook.sh \' "$devcontainer_dir/Dockerfile"
-    grep -Fq '"$TOOLDIR/install-claude-hook.sh"' "$devcontainer_dir/setup-agents.sh"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
     temp_dir="$(mktemp -d)"
@@ -117,26 +114,9 @@ image_test() {
         command -v gh >/dev/null &&
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
-        test -x /opt/agent-devcontainer/gh-app-token.sh &&
-        test -x /opt/agent-devcontainer/install-claude-hook.sh
+        test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
-    docker run --rm "$image" bash -c '
-        smoke_home="$(mktemp -d)"
-        HOME="$smoke_home" /opt/agent-devcontainer/install-claude-hook.sh >/dev/null
-        settings="$smoke_home/.claude/settings.json"
-        package_root="$(dirname "$(dirname "$(readlink -f "$(command -v issue-orchestrator)")")")"
-        expected="node \"$package_root/hooks/pretooluse-usage-gate.mjs\""
-        SETTINGS="$settings" EXPECTED="$expected" node -e '\''
-          const settings = JSON.parse(require("fs").readFileSync(process.env.SETTINGS, "utf8"));
-          const commands = settings.hooks.PreToolUse
-            .filter((entry) => entry.matcher === "Agent")
-            .flatMap((entry) => entry.hooks)
-            .map((hook) => hook.command);
-          if (commands.length !== 1 || commands[0] !== process.env.EXPECTED) process.exit(1);
-          if (commands[0].includes("CLAUDE_PROJECT_DIR")) process.exit(1);
-        '\''
-    '
     set +e
     output="$(printf '{"tool_name":"Agent"}' | docker run --rm -i --network none "$image" bash -c '
         package_root="$(dirname "$(dirname "$(readlink -f "$(command -v issue-orchestrator)")")")"
