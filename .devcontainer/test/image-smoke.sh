@@ -58,11 +58,10 @@ source_test() {
     grep -Fq "SHA-256 $expected_sha." "$devcontainer_dir/Dockerfile"
     grep -Fq "COPY vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
-    grep -Fq 'remove-legacy-usage-gate-hook.sh' "$devcontainer_dir/Dockerfile"
-    grep -Fq '/opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh \' "$devcontainer_dir/Dockerfile"
-    grep -Fq '"$TOOLDIR/remove-legacy-usage-gate-hook.sh"' "$devcontainer_dir/setup-agents.sh"
     ! grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/Dockerfile"
     ! grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/setup-agents.sh"
+    ! grep -Fq 'remove-legacy-usage-gate-hook.sh' "$devcontainer_dir/Dockerfile"
+    ! grep -Fq 'remove-legacy-usage-gate-hook.sh' "$devcontainer_dir/setup-agents.sh"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
     temp_dir="$(mktemp -d)"
@@ -120,32 +119,10 @@ image_test() {
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
         test -x /opt/agent-devcontainer/gh-app-token.sh &&
-        test -x /opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh
+        ! test -e /opt/agent-devcontainer/install-claude-hook.sh &&
+        ! test -e /opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
-    docker run --rm "$image" bash -c '
-        smoke_home="$(mktemp -d)"
-        mkdir -p "$smoke_home/.claude"
-        cat >"$smoke_home/.claude/settings.json" <<'\''SETTINGSEOF'\''
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Agent",
-        "hooks": [{ "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/hooks/pretooluse-usage-gate.mjs\"" }]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [{ "type": "command", "command": "node \"/usr/lib/node_modules/issue-orchestrator/hooks/pretooluse-usage-gate.mjs\"" }]
-      }
-    ]
-  }
-}
-SETTINGSEOF
-        HOME="$smoke_home" /opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh
-        settings="$smoke_home/.claude/settings.json"
-        ! grep -F '\''pretooluse-usage-gate.mjs'\'' "$settings"
-    '
     set +e
     output="$(printf '{"tool_name":"Agent"}' | docker run --rm -i --network none "$image" bash -c '
         package_root="$(dirname "$(dirname "$(readlink -f "$(command -v issue-orchestrator)")")")"
