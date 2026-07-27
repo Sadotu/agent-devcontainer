@@ -168,6 +168,7 @@ case "${1:-} ${2:-}" in
         ;;
       *Config.Image*) [ "$FAKE_SCENARIO" = incompatible ] && echo wrong/image || echo ghcr.io/sadotu/usage-sentinel:latest ;;
       *HostConfig.RestartPolicy.Name*) echo unless-stopped ;;
+      *HostConfig.GroupAdd*) [ "$FAKE_SCENARIO" = missing_group_add ] || echo "$FAKE_SOCK_GID" ;;
       *NetworkSettings.Networks*)
         echo agent-services
         [ "$FAKE_SCENARIO" != extra_network ] || echo arbitrary-network
@@ -182,6 +183,9 @@ CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude
 CODEX_HOME=/var/lib/usage-sentinel/codex
 ENV
         [ "$FAKE_SCENARIO" != duplicate_env ] || echo 'CODEX_HOME=/tmp/override'
+        ;;
+      *bind*)
+        [ "$FAKE_SCENARIO" = missing_sock_mount ] || printf '%s\n' "$DC_DOCKER_SOCK:/var/run/docker.sock"
         ;;
       *Mounts*)
         printf '%s\n' \
@@ -216,6 +220,11 @@ chmod +x "$TMP/bin/docker" "$TMP/bin/devcontainer" "$TMP/bin/sleep"
 export PATH="$TMP/bin:$PATH"
 export FAKE_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(response => { if (!response.ok) throw new Error(\"health check failed: \" + response.status); })'"
 
+: >"$TMP/docker.sock"
+export DC_DOCKER_SOCK="$TMP/docker.sock"
+FAKE_SOCK_GID="$(stat -c '%g' "$DC_DOCKER_SOCK")"
+export FAKE_SOCK_GID
+
 run_dc() {
   FAKE_SCENARIO="$1" LOG="$TMP/$1-$2.log" FAKE_DOCKER_LOG="$TMP/$1-$2.log"
   export FAKE_SCENARIO FAKE_DOCKER_LOG
@@ -240,6 +249,8 @@ assert_log "-e CODEX_HOME=/var/lib/usage-sentinel/codex"
 assert_log "-v usage-sentinel-data:/var/lib/usage-sentinel/data"
 assert_log "-v usage-sentinel-claude:/var/lib/usage-sentinel/claude"
 assert_log "-v usage-sentinel-codex:/var/lib/usage-sentinel/codex"
+assert_log "-v $DC_DOCKER_SOCK:/var/run/docker.sock"
+assert_log "--group-add $FAKE_SOCK_GID"
 assert_log "--health-cmd $FAKE_HEALTH_CMD"
 assert_log "--health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s"
 
@@ -264,7 +275,7 @@ grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
 grep -qi 'remove.*manually' "$TMP/err" || fail "incompatible guidance recommends unusable update path"
 
-for scenario in duplicate_env extra_mount extra_network bad_health different_health; do
+for scenario in duplicate_env extra_mount extra_network bad_health different_health missing_sock_mount missing_group_add; do
   run_dc "$scenario" up
   [ "$RC" -ne 0 ] || fail "$scenario sentinel accepted"
   grep -qi incompatible "$TMP/err" || fail "$scenario failure unclear"

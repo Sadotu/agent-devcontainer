@@ -189,6 +189,13 @@ machine therefore use the same Sentinel. Projects mount neither the Docker
 socket nor Sentinel storage; only the standalone Sentinel container owns its
 credentials and data.
 
+Sentinel itself mounts the host's `/var/run/docker.sock` (override with
+`DC_DOCKER_SOCK`) and joins its numeric group via `--group-add`, so it can
+`docker inspect`/`pause`/`unpause` managed project containers once usage
+crosses a threshold. `sentinel_compatible()` requires and validates both the
+mount and the group, so a container created before this requirement is
+recreated rather than reused.
+
 Sentinel uses exactly three machine-wide named volumes:
 
 - `usage-sentinel-data` at `/var/lib/usage-sentinel/data`
