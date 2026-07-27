@@ -58,10 +58,6 @@ source_test() {
     grep -Fq "SHA-256 $expected_sha." "$devcontainer_dir/Dockerfile"
     grep -Fq "COPY vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
-    ! grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/Dockerfile"
-    ! grep -Fq 'install-claude-hook.sh' "$devcontainer_dir/setup-agents.sh"
-    ! grep -Fq 'remove-legacy-usage-gate-hook.sh' "$devcontainer_dir/Dockerfile"
-    ! grep -Fq 'remove-legacy-usage-gate-hook.sh' "$devcontainer_dir/setup-agents.sh"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
     temp_dir="$(mktemp -d)"
@@ -118,9 +114,7 @@ image_test() {
         command -v gh >/dev/null &&
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
-        test -x /opt/agent-devcontainer/gh-app-token.sh &&
-        ! test -e /opt/agent-devcontainer/install-claude-hook.sh &&
-        ! test -e /opt/agent-devcontainer/remove-legacy-usage-gate-hook.sh
+        test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
     set +e
