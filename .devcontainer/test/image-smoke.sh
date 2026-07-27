@@ -59,6 +59,23 @@ source_test() {
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
+    # Image version identifier (issue #24). The build bakes a VERSION file and
+    # a PATH command from build-args the publish workflow supplies; setup and
+    # the README surface it.
+    local repo_root workflow
+    repo_root="$(dirname "$devcontainer_dir")"
+    workflow="$repo_root/.github/workflows/publish-image.yml"
+    grep -Eq '^ARG IMAGE_VERSION' "$devcontainer_dir/Dockerfile"
+    grep -Eq '^ARG IMAGE_BUILD_DATE' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/VERSION' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'COPY version.sh /usr/local/bin/agent-devcontainer-version' "$devcontainer_dir/Dockerfile"
+    [[ -f "$devcontainer_dir/version.sh" ]]
+    grep -Fq '/opt/agent-devcontainer/VERSION' "$devcontainer_dir/version.sh"
+    grep -Fq 'IMAGE_VERSION=${{ github.sha }}' "$workflow"
+    grep -Fq 'agent-devcontainer image version' "$devcontainer_dir/setup-agents.sh"
+    grep -Fq 'TOOLDIR/VERSION' "$devcontainer_dir/setup-agents.sh"
+    grep -Fq 'agent-devcontainer-version' "$repo_root/README.md"
+
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
     trap "$cleanup" EXIT
@@ -105,6 +122,10 @@ image_test() {
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
+
+    # Version identifier is baked and inspectable from inside the container (issue #24).
+    docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
+    [[ "$(docker run --rm "$image" bash -c 'agent-devcontainer-version')" == *version:* ]]
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 
     set +e

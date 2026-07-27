@@ -161,6 +161,37 @@ Inside the shell, `start work` explicitly launches the bundled
 `issue-orchestrator`. No agent starts automatically. The shell function accepts
 only the literal command `start work` and invokes `issue-orchestrator` with no arguments.
 
+### Checking the image version
+
+Projects pin the floating `:latest` tag, so it is otherwise hard to tell which
+image build a running container uses. Every image bakes in a version identifier
+tied to the build. Check it from inside the container:
+
+```bash
+agent-devcontainer-version          # or: cat /opt/agent-devcontainer/VERSION
+```
+
+From the host, without opening a shell:
+
+```bash
+./.devcontainer/dc exec agent-devcontainer-version
+```
+
+Output looks like:
+
+```
+agent-devcontainer image
+version: 1a2b3c4d…            # the Git commit SHA of the source build
+built:   2026-07-27T12:34:56Z
+```
+
+The `version` line is the Git commit SHA — identical to the published
+`ghcr.io/sadotu/agent-devcontainer:<sha>` image tag — so it maps a container
+straight back to its source commit and image. `setup-agents.sh` also prints
+this banner during every `dc up` / `dc rebuild`, so the resolved version shows
+in the build/rebuild logs. Locally built images (this repo's own dogfood
+`build:` container) report `version: dev`.
+
 ### Setup readiness marker
 
 `setup-agents.sh` publishes
@@ -519,7 +550,9 @@ locally to test changes before publishing. Workflow:
 4. Push to `main` (via PR). `.github/workflows/publish-image.yml` builds and
    pushes `ghcr.io/sadotu/agent-devcontainer:latest` +
    `:<commit-sha>` automatically, using the workflow's own `GITHUB_TOKEN` —
-   no PAT involved. Existing projects pick up the change on their next
+   no PAT involved. The build also bakes the commit SHA in as the image's
+   version identifier (see [Checking the image version](#checking-the-image-version)).
+   Existing projects pick up the change on their next
    `dc rebuild` / "Rebuild Container".
 5. **First publish only**: the pushed package defaults to private on
    ghcr.io — go to the package's settings on GitHub and set it public, or

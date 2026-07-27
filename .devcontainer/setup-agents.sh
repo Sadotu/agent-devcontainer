@@ -22,6 +22,16 @@ _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
 
+# Surface the image version (issue #24). postCreate output streams into the
+# `dc up` / `dc rebuild` logs, so this is the authoritative "build/rebuild logs
+# display the version" surface — baked into the image, independent of the
+# host-side `dc`. Guarded by -r so it stays inert when this script is sourced
+# from a repo checkout (tests) where the baked VERSION file is absent.
+if [ -r "$TOOLDIR/VERSION" ]; then
+  echo "==> agent-devcontainer image version"
+  sed 's/^/    /' "$TOOLDIR/VERSION"
+fi
+
 echo "==> Fixing ownership of persisted config volumes"
 # Named volumes are seeded vscode-owned by the Dockerfile (Docker copies the
 # image path's ownership into a fresh volume on first mount). runArgs sets
