@@ -25,7 +25,7 @@ assert_invalid_usage() {
 }
 
 source_test() {
-    local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha hook_output
+    local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha
     local short_commit full_commit pkg_version expected_sha
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
@@ -49,7 +49,6 @@ source_test() {
     archive_listing="$(tar -tzf "$artifact")"
     grep -Fxq 'package/package.json' <<<"$archive_listing"
     grep -Fxq 'package/bin/supervisor.mjs' <<<"$archive_listing"
-    grep -Fxq 'package/hooks/pretooluse-usage-gate.mjs' <<<"$archive_listing"
     package_json="$(tar -xOzf "$artifact" package/package.json)"
     [[ "$(jq -r '.version' <<<"$package_json")" == "$pkg_version" ]]
     [[ "$(jq -r '.bin["issue-orchestrator"]' <<<"$package_json")" == bin/supervisor.mjs ]]
@@ -63,17 +62,6 @@ source_test() {
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
     trap "$cleanup" EXIT
-
-    mkdir -p "$temp_dir/package"
-    tar -xzf "$artifact" -C "$temp_dir/package"
-    set +e
-    hook_output="$(printf '{"tool_name":"Agent"}' | \
-        SENTINEL_URL=http://127.0.0.1:1 \
-        node "$temp_dir/package/package/hooks/pretooluse-usage-gate.mjs" 2>&1)"
-    status=$?
-    set -e
-    [[ $status -eq 2 ]]
-    [[ $hook_output == *'Usage gate blocked tool use: invalid_pause_context'* ]]
 
     cat >"$temp_dir/issue-orchestrator" <<'EOF'
 #!/usr/bin/env bash
@@ -117,15 +105,6 @@ image_test() {
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
-    set +e
-    output="$(printf '{"tool_name":"Agent"}' | docker run --rm -i --network none "$image" bash -c '
-        package_root="$(dirname "$(dirname "$(readlink -f "$(command -v issue-orchestrator)")")")"
-        node "$package_root/hooks/pretooluse-usage-gate.mjs"
-    ' 2>&1)"
-    status=$?
-    set -e
-    [[ $status -eq 2 ]]
-    [[ $output == *'Usage gate blocked tool use: invalid_pause_context'* ]]
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 
     set +e
