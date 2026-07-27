@@ -114,3 +114,19 @@ COPY devcontainer.json.template /opt/agent-devcontainer/templates/devcontainer.j
 COPY init.sh /usr/local/bin/init
 RUN chmod 0755 /usr/local/bin/init \
         && chmod 0755 /opt/agent-devcontainer/templates/dc
+
+# Image version identifier (issue #24). Tied unambiguously to the built image:
+# IMAGE_VERSION is the Git commit SHA the publish workflow passes, identical to
+# the published `:<sha>` tag. Declared here — after every heavy install layer —
+# so a changing SHA only rebuilds this cheap final layer, not apt/npm caches.
+# Local dogfood builds (devcontainer.json `build:`, no build-args) fall back to
+# `dev`/`unknown`; only published CI builds carry a real SHA.
+ARG IMAGE_VERSION=dev
+ARG IMAGE_BUILD_DATE=unknown
+LABEL org.opencontainers.image.revision="${IMAGE_VERSION}" \
+      org.opencontainers.image.created="${IMAGE_BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/Sadotu/agent-devcontainer"
+RUN printf 'agent-devcontainer image\nversion: %s\nbuilt:   %s\n' \
+        "$IMAGE_VERSION" "$IMAGE_BUILD_DATE" > /opt/agent-devcontainer/VERSION
+COPY version.sh /usr/local/bin/agent-devcontainer-version
+RUN chmod 0755 /usr/local/bin/agent-devcontainer-version
