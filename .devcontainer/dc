@@ -75,6 +75,15 @@ SENTINEL_NAME="usage-sentinel"
 SENTINEL_IMAGE="ghcr.io/sadotu/usage-sentinel:latest"
 SENTINEL_NETWORK="agent-services"
 SENTINEL_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(response => { if (!response.ok) throw new Error(\"health check failed: \" + response.status); })'"
+DC_DOCKER_SOCK="${DC_DOCKER_SOCK:-/var/run/docker.sock}"
+
+docker_sock_gid() {
+  if [ ! -e "$DC_DOCKER_SOCK" ]; then
+    echo "ERROR: $DC_DOCKER_SOCK not found; Sentinel enforcement requires Docker socket access." >&2
+    return 1
+  fi
+  stat -c '%g' "$DC_DOCKER_SOCK"
+}
 
 ensure_sentinel_network() {
   if docker network inspect "$SENTINEL_NETWORK" >/dev/null 2>&1; then
@@ -94,12 +103,14 @@ sentinel_inspect() {
 }
 
 sentinel_compatible() {
-  local image restart network env mounts expected_mounts health_cmd expected_health health_interval health_timeout health_retries health_start
+  local image restart network env mounts binds group_add expected_mounts expected_gid health_cmd expected_health health_interval health_timeout health_retries health_start
   image="$(sentinel_inspect '{{.Config.Image}}')"
   restart="$(sentinel_inspect '{{.HostConfig.RestartPolicy.Name}}')"
   network="$(sentinel_inspect '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}')"
   env="$(sentinel_inspect '{{range .Config.Env}}{{println .}}{{end}}')"
   mounts="$(sentinel_inspect '{{range .Mounts}}{{println .Name ":" .Destination}}{{end}}' | tr -d ' ')"
+  binds="$(sentinel_inspect '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source ":" .Destination}}{{end}}{{end}}' | tr -d ' ')"
+  group_add="$(sentinel_inspect '{{range .HostConfig.GroupAdd}}{{println .}}{{end}}')"
   health_cmd="$(sentinel_inspect '{{join .Config.Healthcheck.Test "\n"}}')"
   health_interval="$(sentinel_inspect '{{.Config.Healthcheck.Interval}}')"
   health_timeout="$(sentinel_inspect '{{.Config.Healthcheck.Timeout}}')"
@@ -110,6 +121,7 @@ sentinel_compatible() {
     'usage-sentinel-codex:/var/lib/usage-sentinel/codex' \
     'usage-sentinel-data:/var/lib/usage-sentinel/data')"
   expected_health="$(printf 'CMD-SHELL\n%s' "$SENTINEL_HEALTH_CMD")"
+  expected_gid="$(docker_sock_gid)" || return 1
 
   [ "$image" = "$SENTINEL_IMAGE" ] &&
     [ "$restart" = "unless-stopped" ] &&
@@ -127,6 +139,8 @@ sentinel_compatible() {
     grep -Fxq 'CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude' <<<"$env" &&
     grep -Fxq 'CODEX_HOME=/var/lib/usage-sentinel/codex' <<<"$env" &&
     [ "$(sort <<<"$mounts")" = "$expected_mounts" ] &&
+    [ "$binds" = "$DC_DOCKER_SOCK:/var/run/docker.sock" ] &&
+    [ "$group_add" = "$expected_gid" ] &&
     [ "$health_cmd" = "$expected_health" ] &&
     [ "$health_interval" = 30s ] && [ "$health_timeout" = 5s ] &&
     [ "$health_retries" = 3 ] && [ "$health_start" = 10s ]
@@ -150,6 +164,8 @@ wait_for_sentinel() {
 }
 
 create_sentinel() {
+  local gid
+  gid="$(docker_sock_gid)" || return 1
   docker run -d --name "$SENTINEL_NAME" --restart unless-stopped --network "$SENTINEL_NETWORK" \
     -e USAGE_SENTINEL_HOST=0.0.0.0 \
     -e USAGE_SENTINEL_DATA_DIR=/var/lib/usage-sentinel/data \
@@ -160,6 +176,8 @@ create_sentinel() {
     -v usage-sentinel-data:/var/lib/usage-sentinel/data \
     -v usage-sentinel-claude:/var/lib/usage-sentinel/claude \
     -v usage-sentinel-codex:/var/lib/usage-sentinel/codex \
+    -v "$DC_DOCKER_SOCK:/var/run/docker.sock" \
+    --group-add "$gid" \
     --health-cmd "$SENTINEL_HEALTH_CMD" \
     --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s \
     "$SENTINEL_IMAGE" >/dev/null
