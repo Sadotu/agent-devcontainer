@@ -185,13 +185,22 @@ ENV
         [ "$FAKE_SCENARIO" != duplicate_env ] || echo 'CODEX_HOME=/tmp/override'
         ;;
       *bind*)
-        [ "$FAKE_SCENARIO" = missing_sock_mount ] || printf '%s\n' "$DC_DOCKER_SOCK:/var/run/docker.sock"
+        if [[ "$format" = *.Source* ]]; then
+          if [ "$FAKE_SCENARIO" = rewritten_sock_source ]; then
+            printf '%s\n' '/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/docker.sock:/var/run/docker.sock'
+          else
+            [ "$FAKE_SCENARIO" = missing_sock_mount ] || printf '%s\n' "$DC_DOCKER_SOCK:/var/run/docker.sock"
+          fi
+        else
+          [ "$FAKE_SCENARIO" = missing_sock_mount ] || printf '%s\n' '/var/run/docker.sock'
+        fi
         ;;
       *Mounts*)
         printf '%s\n' \
           'usage-sentinel-data:/var/lib/usage-sentinel/data' \
           'usage-sentinel-claude:/var/lib/usage-sentinel/claude' \
           'usage-sentinel-codex:/var/lib/usage-sentinel/codex'
+        [[ "$format" = *'eq .Type "volume"'* ]] || echo ':/var/run/docker.sock'
         [ "$FAKE_SCENARIO" != extra_mount ] || echo 'unexpected-volume:/unexpected'
         ;;
       *Healthcheck.Test*)
@@ -259,6 +268,9 @@ run_dc healthy up
 assert_no_log "docker start usage-sentinel"
 assert_no_log "docker rm"
 assert_no_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
+
+run_dc rewritten_sock_source up
+[ "$RC" -eq 0 ] || fail "Docker Desktop rewritten socket source rejected"
 
 run_dc stopped rebuild
 [ "$RC" -eq 0 ] || fail "stopped sentinel rebuild failed"
