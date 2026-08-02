@@ -368,6 +368,21 @@ else
   echo "         See /tmp/agent-cli-update.log for details."
 fi
 
+# issue-orchestrator installed separately (not published to a registry yet —
+# Sadotu/issue-orchestrator#81 — so this fails on every run until it is).
+# A combined `npm install -g a b issue-orchestrator@latest` would abort
+# atomically on issue-orchestrator's 404 and take claude/codex down with it —
+# npm resolves all args before installing any of them, confirmed by testing
+# a real + a nonexistent package together. Kept as its own non-fatal call.
+if npm install -g issue-orchestrator@latest \
+    >/tmp/issue-orchestrator-update.log 2>&1; then
+  echo "    issue-orchestrator: $(npm list -g issue-orchestrator --depth=0 2>/dev/null | sed -n 's/.*issue-orchestrator@//p' || echo unknown)"
+else
+  echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
+  echo "         Expected until it's published to a registry (Sadotu/issue-orchestrator#81)."
+  echo "         See /tmp/issue-orchestrator-update.log for details."
+fi
+
 echo "==> Claude Code plugins/skills"
 # `claude plugin marketplace add` / `claude plugin install` are safe to re-run —
 # an already-added marketplace or already-installed plugin just no-ops.
