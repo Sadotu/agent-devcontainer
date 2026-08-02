@@ -103,13 +103,13 @@ sentinel_inspect() {
 }
 
 sentinel_compatible() {
-  local image restart network env mounts binds group_add expected_mounts expected_gid health_cmd expected_health health_interval health_timeout health_retries health_start
+  local image restart network env mounts bind_destinations group_add expected_mounts expected_gid health_cmd expected_health health_interval health_timeout health_retries health_start
   image="$(sentinel_inspect '{{.Config.Image}}')"
   restart="$(sentinel_inspect '{{.HostConfig.RestartPolicy.Name}}')"
   network="$(sentinel_inspect '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}')"
   env="$(sentinel_inspect '{{range .Config.Env}}{{println .}}{{end}}')"
-  mounts="$(sentinel_inspect '{{range .Mounts}}{{println .Name ":" .Destination}}{{end}}' | tr -d ' ')"
-  binds="$(sentinel_inspect '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Source ":" .Destination}}{{end}}{{end}}' | tr -d ' ')"
+  mounts="$(sentinel_inspect '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name ":" .Destination}}{{end}}{{end}}' | tr -d ' ')"
+  bind_destinations="$(sentinel_inspect '{{range .Mounts}}{{if eq .Type "bind"}}{{println .Destination}}{{end}}{{end}}')"
   group_add="$(sentinel_inspect '{{range .HostConfig.GroupAdd}}{{println .}}{{end}}')"
   health_cmd="$(sentinel_inspect '{{join .Config.Healthcheck.Test "\n"}}')"
   health_interval="$(sentinel_inspect '{{.Config.Healthcheck.Interval}}')"
@@ -139,7 +139,7 @@ sentinel_compatible() {
     grep -Fxq 'CLAUDE_CONFIG_DIR=/var/lib/usage-sentinel/claude' <<<"$env" &&
     grep -Fxq 'CODEX_HOME=/var/lib/usage-sentinel/codex' <<<"$env" &&
     [ "$(sort <<<"$mounts")" = "$expected_mounts" ] &&
-    [ "$binds" = "$DC_DOCKER_SOCK:/var/run/docker.sock" ] &&
+    [ "$bind_destinations" = /var/run/docker.sock ] &&
     [ "$group_add" = "$expected_gid" ] &&
     [ "$health_cmd" = "$expected_health" ] &&
     [ "$health_interval" = 30s ] && [ "$health_timeout" = 5s ] &&
