@@ -113,32 +113,34 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
-- issue-orchestrator now self-updates on every `dc up`/rebuild, same
-  mechanism as Claude Code/Codex: `setup-agents.sh` installs
-  `@sadotu/issue-orchestrator@latest` into the user-owned `~/.npm-global`
-  prefix, which shadows the Dockerfile-baked vendored-tarball fallback on
-  PATH. `bump-vendor.sh` + `publish-image.yml` are now only needed for the
-  occasional baked-in-fallback bump, not day-to-day freshness. Three traps
-  live here:
-  - **Scoped, and not on npmjs.com.** The package is
-    `@sadotu/issue-orchestrator` in GitHub Packages
-    (Sadotu/issue-orchestrator#81). The bare name `issue-orchestrator` is
-    unclaimed on npmjs.com, so installing it 404s forever and falls back
-    silently — that shipped once (#39, fixed in #40).
-  - **No anonymous read, even public.** Unlike the Container registry, the
-    GitHub Packages npm registry always needs a token. Rather than a PAT,
-    the install reuses the App installation token (it carries
-    `packages:read`) through an `.npmrc` that references
-    `${GITHUB_PACKAGES_TOKEN}` — never the hourly-expiring value itself.
+- issue-orchestrator does **not** self-update, unlike Claude Code/Codex. The
+  Dockerfile-vendored tarball is the only copy in the image, so shipping a
+  new version still means `bump-vendor.sh` + `publish-image.yml` + a
+  `dc rebuild`. Two attempts to change that were reverted (#39, #41 →
+  #40); the reasons are worth keeping, because each looked fine until it
+  reached a real container:
+  - **GitHub Packages rejects GitHub App tokens.** The registry answers
+    `403 {"error":"Permission installation not allowed to Read organization
+    package"}` for an installation token that *does* carry `packages:read`.
+    Only Actions' built-in `GITHUB_TOKEN` is honoured. Beware the false
+    positive that misled us: `npm whoami --registry=https://npm.pkg.github.com`
+    happily returns `container-coding-agent[bot]`, because identity is
+    accepted and only the package read is denied. **Never take a successful
+    `whoami` as evidence an install will work — test an actual read.**
+  - **No anonymous read either**, even for a public package (`401`), so
+    making the package public does not help. Fixing this needs a classic PAT
+    with `read:packages` in the vault, or publishing to npmjs.com.
+  - **The package is scoped**, `@sadotu/issue-orchestrator`; the bare name is
+    unclaimed on npmjs.com, so installing `issue-orchestrator@latest` 404s
+    forever and falls back silently. That shipped once in #39.
   - **Never run `issue-orchestrator --version`.** It takes no flags, so any
     invocation starts the supervisor and its workers. Read the version from
     `npm list -g` instead.
-  It stays a separate `npm install -g` call from claude/codex's, not
-  combined into one — `npm install -g` resolves every argument before
-  installing any of them, so one unreachable package aborts the whole
-  command atomically and silently stops claude/codex updating too.
-  Confirmed by testing `npm install -g <real-pkg> <nonexistent-pkg>`
-  together — nothing installs, exit 1.
+  - If a self-update is ever restored, keep it a **separate**
+    `npm install -g` call from claude/codex's: npm resolves every argument
+    before installing any, so one unreachable package aborts the whole
+    command. Confirmed by testing a real and a nonexistent package together
+    — nothing installs, exit 1.
 - Claude Connectors are account-level, riding along with whatever
   `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
   Forwarding the host token in means a host-enabled GitHub connector would

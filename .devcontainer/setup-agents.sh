@@ -368,32 +368,23 @@ else
   echo "         See /tmp/agent-cli-update.log for details."
 fi
 
-# issue-orchestrator publishes to GitHub Packages as @sadotu/issue-orchestrator
-# (Sadotu/issue-orchestrator#81) — not to npmjs.com, and not unscoped. That
-# registry has no anonymous read even for a public package, so point the scope
-# at it and authenticate with the App installation token this container already
-# mints for git and gh; it carries packages:read, so no PAT is involved. The
-# .npmrc keeps a *reference* to the variable, never the value — installation
-# tokens expire hourly, so a literal copy would be stale and a secret at rest
-# for no benefit.
-npm config set @sadotu:registry https://npm.pkg.github.com >/dev/null 2>&1 || true
-npm config set '//npm.pkg.github.com/:_authToken' '${GITHUB_PACKAGES_TOKEN}' \
-  >/dev/null 2>&1 || true
-# Kept as its own non-fatal call rather than folded into the claude/codex
-# install above: `npm install -g a b c` resolves every argument before
-# installing any of them, so one unreachable package aborts the whole command
-# atomically and would silently stop claude/codex updating too.
-if GITHUB_PACKAGES_TOKEN="$(GITHUB_APP_REPO=Sadotu/issue-orchestrator \
-      "$TOOLDIR/gh-app-token.sh" 2>/dev/null)" \
-    npm install -g @sadotu/issue-orchestrator@latest \
-    >/tmp/issue-orchestrator-update.log 2>&1; then
-  # Never probe with `issue-orchestrator --version`: the binary takes no flags,
-  # so any invocation starts the supervisor and its workers. Read npm's record.
-  echo "    issue-orchestrator: $(npm list -g @sadotu/issue-orchestrator --depth=0 2>/dev/null | sed -n 's/.*issue-orchestrator@//p' || echo unknown)"
-else
-  echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
-  echo "         See /tmp/issue-orchestrator-update.log for details."
-fi
+# No issue-orchestrator self-update here on purpose. It publishes only to
+# GitHub Packages (@sadotu/issue-orchestrator, Sadotu/issue-orchestrator#81),
+# and that registry rejects GitHub App installation tokens outright:
+#
+#   403 {"error":"Permission installation not allowed to Read organization package"}
+#
+# — returned for a token that does carry packages:read. `npm whoami` against
+# the registry still answers `container-coding-agent[bot]`, so the identity is
+# accepted and only the package read is denied; do not treat a successful
+# whoami as proof an install will work. The sole App-flavoured token the npm
+# registry honours is Actions' built-in GITHUB_TOKEN. Anonymous reads are 401
+# even for public packages.
+#
+# Making this self-update work therefore needs either a classic PAT with
+# read:packages stored in the vault, or publishing to npmjs.com. Until one of
+# those is chosen, the Dockerfile-vendored tarball stays the only path — see
+# Sadotu/agent-devcontainer#40.
 
 echo "==> Claude Code plugins/skills"
 # `claude plugin marketplace add` / `claude plugin install` are safe to re-run —
