@@ -113,6 +113,21 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
+- issue-orchestrator now self-updates on every `dc up`/rebuild, same
+  mechanism as Claude Code/Codex: `setup-agents.sh` installs
+  `issue-orchestrator@latest` into the user-owned `~/.npm-global` prefix,
+  which shadows the Dockerfile-baked vendored-tarball fallback on PATH. It's
+  a separate `npm install -g` call from claude/codex's, not combined into
+  one — `npm install -g` resolves every argument before installing any of
+  them, so one unresolvable package (issue-orchestrator, until it publishes
+  to a registry — Sadotu/issue-orchestrator#81) would abort the whole
+  command atomically and silently stop claude/codex from updating too.
+  Confirmed by testing `npm install -g <real-pkg> <nonexistent-pkg>`
+  together — nothing installs, exit 1. Until issue-orchestrator publishes,
+  its install attempt fails harmlessly on its own non-fatal `if` and falls
+  back to the vendored tarball; `bump-vendor.sh` + `publish-image.yml` are
+  now only needed for the occasional baked-in-fallback bump, not day-to-day
+  freshness.
 - Claude Connectors are account-level, riding along with whatever
   `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
   Forwarding the host token in means a host-enabled GitHub connector would
