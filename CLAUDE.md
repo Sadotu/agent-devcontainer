@@ -113,23 +113,28 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
-- issue-orchestrator now self-updates on every `dc up`/rebuild, same
-  mechanism as Claude Code/Codex: `setup-agents.sh` installs
-  `@sadotu/issue-orchestrator@latest` into the user-owned `~/.npm-global`
-  prefix, which shadows the Dockerfile-baked vendored-tarball fallback on
-  PATH. `bump-vendor.sh` + `publish-image.yml` are now only needed for the
-  occasional baked-in-fallback bump, not day-to-day freshness. Three traps
-  live here:
-  - **Scoped, and not on npmjs.com.** The package is
-    `@sadotu/issue-orchestrator` in GitHub Packages
-    (Sadotu/issue-orchestrator#81). The bare name `issue-orchestrator` is
-    unclaimed on npmjs.com, so installing it 404s forever and falls back
-    silently — that shipped once (#39, fixed in #40).
-  - **No anonymous read, even public.** Unlike the Container registry, the
-    GitHub Packages npm registry always needs a token. Rather than a PAT,
-    the install reuses the App installation token (it carries
-    `packages:read`) through an `.npmrc` that references
-    `${GITHUB_PACKAGES_TOKEN}` — never the hourly-expiring value itself.
+- issue-orchestrator self-updates on every `dc up`/rebuild, same mechanism as
+  Claude Code/Codex: `setup-agents.sh` installs
+  `@nickysagan/issue-orchestrator@latest` from npmjs into the user-owned
+  `~/.npm-global` prefix, which shadows the Dockerfile-baked vendored-tarball
+  fallback on PATH. `bump-vendor.sh` + `publish-image.yml` are now only needed
+  for the occasional baked-in-fallback bump, not day-to-day freshness. Traps
+  worth keeping:
+  - **The name is `@nickysagan/issue-orchestrator` on npmjs**, not
+    `issue-orchestrator` and not `@sadotu/...`. npm scopes must match the
+    publishing npm account, which is `nickysagan`; `sadotu` is the GitHub
+    owner and means nothing to npm. Installing the bare name 404s forever
+    and falls back silently — that shipped once (#39).
+  - **It is on npmjs, not GitHub Packages, and that is deliberate.** GitHub
+    Packages rejects GitHub App installation tokens outright — `403
+    {"error":"Permission installation not allowed to Read organization
+    package"}` for a token that *does* carry `packages:read` — and has no
+    anonymous read even for public packages. The trap that cost a full
+    round-trip (#41, reverted): `npm whoami` against that registry succeeds
+    and returns `container-coding-agent[bot]`, because identity is accepted
+    and only the package read is denied. **Never take a successful `whoami`
+    as proof an install will work — test an actual read.** npmjs needs no
+    credential at all, which is why it won.
   - **Never run `issue-orchestrator --version`.** It takes no flags, so any
     invocation starts the supervisor and its workers. Read the version from
     `npm list -g` instead.
