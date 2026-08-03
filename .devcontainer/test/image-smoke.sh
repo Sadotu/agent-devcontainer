@@ -76,6 +76,11 @@ source_test() {
     grep -Fq 'TOOLDIR/VERSION' "$devcontainer_dir/setup-agents.sh"
     grep -Fq 'agent-devcontainer-version' "$repo_root/README.md"
 
+    # `landed` post-merge helper: baked onto PATH the same way, and documented.
+    grep -Fq 'COPY landed.sh /usr/local/bin/landed' "$devcontainer_dir/Dockerfile"
+    [[ -f "$devcontainer_dir/landed.sh" ]]
+    grep -Fq 'landed' "$repo_root/README.md"
+
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
     trap "$cleanup" EXIT
@@ -126,6 +131,9 @@ image_test() {
     # Version identifier is baked and inspectable from inside the container (issue #24).
     docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
     [[ "$(docker run --rm "$image" bash -c 'agent-devcontainer-version')" == *version:* ]]
+    # `landed` is on PATH and refuses to run without a PR number (exit 2).
+    docker run --rm "$image" bash -c 'command -v landed >/dev/null'
+    [[ "$(docker run --rm "$image" bash -c 'landed; echo $?' 2>/dev/null | tail -1)" == 2 ]]
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 
     set +e

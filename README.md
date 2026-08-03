@@ -192,6 +192,18 @@ this banner during every `dc up` / `dc rebuild`, so the resolved version shows
 in the build/rebuild logs. Locally built images (this repo's own dogfood
 `build:` container) report `version: dev`.
 
+### Checking whether a merge reached users
+
+`landed` reports in one call whether a pull request merged, whether its
+`Closes #n` issues closed, and whether the workflow that merge triggered
+succeeded — a merge alone ships nothing.
+
+```bash
+landed 43                            # repository of the current directory
+landed Sadotu/issue-orchestrator 87  # any repository
+landed 43 --wait                     # block until a running workflow finishes
+```
+
 ### Setup readiness marker
 
 `setup-agents.sh` publishes
