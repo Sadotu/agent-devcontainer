@@ -192,6 +192,35 @@ this banner during every `dc up` / `dc rebuild`, so the resolved version shows
 in the build/rebuild logs. Locally built images (this repo's own dogfood
 `build:` container) report `version: dev`.
 
+### Checking whether a merge reached users
+
+A merge is not a release. Anything baked into an image or published to a
+registry only reaches users once the workflow that the merge triggered
+finishes — minutes later, long after the merge itself reports success. The
+`landed` command answers all three questions at once:
+
+```bash
+landed 43                         # PR in the current directory's repository
+landed Sadotu/issue-orchestrator 87
+landed 43 --wait                  # block until a running workflow finishes
+```
+
+```
+== Sadotu/agent-devcontainer#43
+   pr:    MERGED at f906061 on 2026-08-03T20:29:58Z
+   issue: #40 CLOSED — Point the issue-orchestrator self-update at GitHub Packages
+   run:   Publish devcontainer image completed/success
+```
+
+A repository that releases from tags rather than merges reports `run: none on
+main`, which is the honest answer rather than a stale unrelated run. On a
+failed run it prints the `gh run view --log-failed` command to use next.
+
+It is plain `bash` plus `gh` — no coupling to Claude, Codex, or any other
+agent; a human running it sees identical output. Inside the container it
+authenticates with the GitHub App like everything else; elsewhere it falls
+back to whatever `gh` is already logged in as.
+
 ### Setup readiness marker
 
 `setup-agents.sh` publishes

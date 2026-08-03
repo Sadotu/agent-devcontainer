@@ -136,3 +136,9 @@ RUN printf 'agent-devcontainer image\nversion: %s\nbuilt:   %s\n' \
         "$IMAGE_VERSION" "$IMAGE_BUILD_DATE" > /opt/agent-devcontainer/VERSION
 COPY version.sh /usr/local/bin/agent-devcontainer-version
 RUN chmod 0755 /usr/local/bin/agent-devcontainer-version
+
+# `landed <pr>` — did a merge actually reach users? Cross-repo by nature, so it
+# lives here rather than in any one project. Plain bash + gh: no Claude, Codex,
+# or other agent coupling; a human running it gets identical output.
+COPY landed.sh /usr/local/bin/landed
+RUN chmod 0755 /usr/local/bin/landed
