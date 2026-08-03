@@ -44,9 +44,9 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # Issue Orchestrator package produced with `npm pack` from Sadotu/issue-orchestrator
 # commit 6349c83929750b559965fbffb59fcd5eb35d2964 (package version 0.1.0).
 # SHA-256 97b3f3881d1133dd77d8630fae8d5646ebadc819c1c9a805d3a223745cbcb035.
-# Baked-in fallback only, same role as Claude Code/Codex below — once
-# issue-orchestrator publishes to a registry (Sadotu/issue-orchestrator#81),
-# setup-agents.sh shadows this with issue-orchestrator@latest at runtime.
+# Baked-in fallback only, same role as Claude Code/Codex below —
+# setup-agents.sh shadows this at runtime with @sadotu/issue-orchestrator@latest
+# from GitHub Packages (Sadotu/issue-orchestrator#81).
 # Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
 # longer gates day-to-day issue-orchestrator freshness.
 COPY vendor/issue-orchestrator-6349c8392975.tgz /opt/agent-devcontainer/vendor/

@@ -115,19 +115,30 @@ When running **inside the container** (workspace mounted at
   self-renews via its refresh token, so it doesn't need this.
 - issue-orchestrator now self-updates on every `dc up`/rebuild, same
   mechanism as Claude Code/Codex: `setup-agents.sh` installs
-  `issue-orchestrator@latest` into the user-owned `~/.npm-global` prefix,
-  which shadows the Dockerfile-baked vendored-tarball fallback on PATH. It's
-  a separate `npm install -g` call from claude/codex's, not combined into
-  one — `npm install -g` resolves every argument before installing any of
-  them, so one unresolvable package (issue-orchestrator, until it publishes
-  to a registry — Sadotu/issue-orchestrator#81) would abort the whole
-  command atomically and silently stop claude/codex from updating too.
+  `@sadotu/issue-orchestrator@latest` into the user-owned `~/.npm-global`
+  prefix, which shadows the Dockerfile-baked vendored-tarball fallback on
+  PATH. `bump-vendor.sh` + `publish-image.yml` are now only needed for the
+  occasional baked-in-fallback bump, not day-to-day freshness. Three traps
+  live here:
+  - **Scoped, and not on npmjs.com.** The package is
+    `@sadotu/issue-orchestrator` in GitHub Packages
+    (Sadotu/issue-orchestrator#81). The bare name `issue-orchestrator` is
+    unclaimed on npmjs.com, so installing it 404s forever and falls back
+    silently — that shipped once (#39, fixed in #40).
+  - **No anonymous read, even public.** Unlike the Container registry, the
+    GitHub Packages npm registry always needs a token. Rather than a PAT,
+    the install reuses the App installation token (it carries
+    `packages:read`) through an `.npmrc` that references
+    `${GITHUB_PACKAGES_TOKEN}` — never the hourly-expiring value itself.
+  - **Never run `issue-orchestrator --version`.** It takes no flags, so any
+    invocation starts the supervisor and its workers. Read the version from
+    `npm list -g` instead.
+  It stays a separate `npm install -g` call from claude/codex's, not
+  combined into one — `npm install -g` resolves every argument before
+  installing any of them, so one unreachable package aborts the whole
+  command atomically and silently stops claude/codex updating too.
   Confirmed by testing `npm install -g <real-pkg> <nonexistent-pkg>`
-  together — nothing installs, exit 1. Until issue-orchestrator publishes,
-  its install attempt fails harmlessly on its own non-fatal `if` and falls
-  back to the vendored tarball; `bump-vendor.sh` + `publish-image.yml` are
-  now only needed for the occasional baked-in-fallback bump, not day-to-day
-  freshness.
+  together — nothing installs, exit 1.
 - Claude Connectors are account-level, riding along with whatever
   `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
   Forwarding the host token in means a host-enabled GitHub connector would
