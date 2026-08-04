@@ -204,6 +204,34 @@ landed Sadotu/issue-orchestrator 87  # any repository
 landed 43 --wait                     # block until a running workflow finishes
 ```
 
+### Running `gh` as the App without the token prefix
+
+`ghx` runs `gh` authenticated as the GitHub App, so you skip the
+`GH_TOKEN="$(… gh-app-token.sh)"` prefix on every call:
+
+```bash
+ghx issue list                       # instead of GH_TOKEN="$(…)" gh issue list
+ghx pr view 48 --repo Sadotu/agent-devcontainer
+```
+
+It mints a fresh token per call and injects it through the **environment**, never
+a command line — `bash -x ghx …` traces the arguments to `gh`, not the token, so
+tracing can't leak it. Outside the container (App helper absent) it falls back to
+whatever `gh` is already authenticated as.
+
+### Why did a CI run fail?
+
+`why-failed` prints only the decisive lines of a failed run — the failing step,
+the assertion, the exit code — instead of a full `gh run view --log-failed` dump,
+and names that command so you can escalate when it can't classify the failure:
+
+```bash
+why-failed                           # most recent failed run in this repo
+why-failed 1234567890                # a specific run id
+```
+
+With no failed run it says so and exits cleanly rather than erroring.
+
 ### Setup readiness marker
 
 `setup-agents.sh` publishes

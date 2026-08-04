@@ -81,6 +81,23 @@ source_test() {
     [[ -f "$devcontainer_dir/landed.sh" ]]
     grep -Fq 'landed' "$repo_root/README.md"
 
+    # `ghx` App-token wrapper and `why-failed` CI summariser (issue #45): baked
+    # onto PATH beside `landed`, documented, and — for `ghx` — the token must
+    # only ever reach `gh` through the environment, never a traced command line.
+    grep -Fq 'COPY ghx.sh /usr/local/bin/ghx' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'COPY why-failed.sh /usr/local/bin/why-failed' "$devcontainer_dir/Dockerfile"
+    [[ -f "$devcontainer_dir/ghx.sh" ]]
+    [[ -f "$devcontainer_dir/why-failed.sh" ]]
+    grep -Fq 'exec gh' "$devcontainer_dir/ghx.sh"
+    grep -q 'GH_TOKEN=' "$devcontainer_dir/ghx.sh"
+    # Never ENABLES xtrace (no `set -x`/`set -ex` in command position — comments
+    # and the `set +x` defence below don't count), and DOES disable inherited
+    # tracing before touching the token.
+    ! grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*x' "$devcontainer_dir/ghx.sh"
+    grep -qE '^[[:space:]]*(\{[[:space:]]*)?set[[:space:]]+\+x' "$devcontainer_dir/ghx.sh"
+    grep -Fq 'ghx' "$repo_root/README.md"
+    grep -Fq 'why-failed' "$repo_root/README.md"
+
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
     trap "$cleanup" EXIT
@@ -134,6 +151,12 @@ image_test() {
     # `landed` is on PATH and refuses to run without a PR number (exit 2).
     docker run --rm "$image" bash -c 'command -v landed >/dev/null'
     [[ "$(docker run --rm "$image" bash -c 'landed; echo $?' 2>/dev/null | tail -1)" == 2 ]]
+
+    # `ghx` and `why-failed` (issue #45) are on PATH; `why-failed` rejects a
+    # non-numeric argument with exit 2 without needing any auth or network.
+    docker run --rm "$image" bash -c 'command -v ghx >/dev/null'
+    docker run --rm "$image" bash -c 'command -v why-failed >/dev/null'
+    [[ "$(docker run --rm "$image" bash -c 'why-failed nope; echo $?' 2>/dev/null | tail -1)" == 2 ]]
     docker run --rm "$image" bash -ic 'declare -F start >/dev/null'
 
     set +e
