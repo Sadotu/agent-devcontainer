@@ -8,3 +8,7 @@ source = "Sadotu/agent-skills"
 [[skills]]
 name = "setup"
 source = "Sadotu/agent-skills"
+
+[[skills]]
+name = "review-pr"
+source = "Sadotu/agent-skills"
