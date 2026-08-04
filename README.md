@@ -536,6 +536,23 @@ CLI updates + plugin/skill installs itself. What's left only after
 Never `gh auth login` / `gh auth setup-git` — this container is
 GitHub-App-only.
 
+## Running the test suite
+
+`.devcontainer/test-all.sh` runs every `.devcontainer/test/*.sh` suite with the
+correct invocation and prints one `PASS`/`FAIL` line per file, exiting nonzero
+if any suite fails (with a bounded tail of the failing suite's output):
+
+```bash
+./.devcontainer/test-all.sh            # source mode — no Docker; image-smoke.sh runs --source-only
+./.devcontainer/test-all.sh IMAGE_TAG  # image mode — also runs image-smoke.sh's docker-run assertions
+```
+
+Source mode is what runs in a devcontainer with no Docker socket. `image-smoke.sh`
+is the one suite that needs an explicit argument — run bare it exits 2 with a
+usage message — so the runner always passes it `--source-only` or the image tag.
+Adding a new `.devcontainer/test/*.sh` needs no change to the runner; it is
+discovered by glob.
+
 ## Maintaining this repo (image source)
 
 This repo's own `.devcontainer/devcontainer.json` uses `build`, not `image`
