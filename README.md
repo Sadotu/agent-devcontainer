@@ -27,7 +27,7 @@ GitHub App ID) and `private-key-b64` (base64-encoded private key, for example
 `base64 -w0 private-key.pem`). On first start, Bitwarden unlock supplies the
 GitHub App key; no `.pem` is written to the host.
 
-Claude workers need `CLAUDE_CODE_OAUTH_TOKEN` exported before `dc up` (create
+Claude workers need `CLAUDE_CODE_OAUTH_TOKEN` exported before `./.devcontainer/dc up` (create
 it with `claude setup-token`), or a Bitwarden item named
 `claude-code-oauth-token` containing the token in Notes. Codex workers need
 Bitwarden item `codex-auth-token` with `~/.codex/auth.json` in Notes. To repair,

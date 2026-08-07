@@ -60,8 +60,8 @@ source_test() {
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
     # Image version identifier (issue #24). The build bakes a VERSION file and
-    # a PATH command from build-args the publish workflow supplies; setup and
-    # the README surface it.
+    # a PATH command from build-args the publish workflow supplies; setup
+    # reports it.
     local repo_root workflow
     repo_root="$(dirname "$devcontainer_dir")"
     workflow="$repo_root/.github/workflows/publish-image.yml"
@@ -78,9 +78,9 @@ source_test() {
     grep -Fq 'COPY landed.sh /usr/local/bin/landed' "$devcontainer_dir/Dockerfile"
     [[ -f "$devcontainer_dir/landed.sh" ]]
 
-    # `ghx` App-token wrapper and `why-failed` CI summariser (issue #45): baked
-    # onto PATH beside `landed`, documented, and — for `ghx` — the token must
-    # only ever reach `gh` through the environment, never a traced command line.
+    # `ghx` App-token wrapper and `why-failed` CI summariser (issue #45) are
+    # baked onto PATH; `ghx` remains documented, and its token must only ever
+    # reach `gh` through the environment, never a traced command line.
     grep -Fq 'COPY ghx.sh /usr/local/bin/ghx' "$devcontainer_dir/Dockerfile"
     grep -Fq 'COPY why-failed.sh /usr/local/bin/why-failed' "$devcontainer_dir/Dockerfile"
     [[ -f "$devcontainer_dir/ghx.sh" ]]
