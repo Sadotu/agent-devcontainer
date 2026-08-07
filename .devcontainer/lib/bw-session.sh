@@ -36,6 +36,11 @@ bw_fail() {
 # Returns 0 with BW_SESSION set on success.
 bw_unlocked_by_us=false
 bw_session_announced=false
+bw_synced=false
+sanitize_bw_output() {
+  sed -E 's/(BW_SESSION=")[^"]*/\1[REDACTED]/g'
+}
+
 ensure_bw_session() {
   local mode="$1"
   if [ -n "${BW_SESSION:-}" ]; then
@@ -43,7 +48,8 @@ ensure_bw_session() {
       echo "    Reusing existing BW_SESSION."
       bw_session_announced=true
     fi
-    return 0
+    sync_bw_session "$mode"
+    return
   fi
   if ! command -v bw >/dev/null 2>&1; then
     [ "$mode" = fatal ] && bw_fail "Bitwarden CLI (bw) not found in the image — cannot fetch the GitHub App key."
@@ -53,16 +59,19 @@ ensure_bw_session() {
   local bw_attempt=1 bw_log
   while :; do
     bw_log="$(mktemp)"
+    chmod 600 "$bw_log"
     if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
       # Already logged in (login state persisted from a prior run in this
       # container) — just needs unlocking.
       echo "    Bitwarden already logged in — unlocking (interactive)..."
-      NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
+      NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 \
+        | tee "$bw_log" | sanitize_bw_output >&2 || true
     else
       # A successful `bw login` already unlocks the vault as part of
       # authenticating — no separate `bw unlock` needed.
       echo "    Logging into Bitwarden (interactive — one-time per container)..."
-      NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
+      NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 \
+        | tee "$bw_log" | sanitize_bw_output >&2 || true
     fi
     # Strip ANSI escapes before parsing. `|| true` guards the whole pipeline:
     # under `set -eo pipefail`, grep finding no match (the expected outcome on
@@ -73,7 +82,8 @@ ensure_bw_session() {
       rm -f "$bw_log"
       bw_unlocked_by_us=true
       bw_session_announced=true
-      return 0
+      sync_bw_session "$mode"
+      return
     fi
     # No session — classify the failure from bw's own output.
     if grep -qiE 'ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network error|cannot connect|failed to fetch' "$bw_log"; then
@@ -98,7 +108,7 @@ ensure_bw_session() {
     # interactive terminal to prompt on (e.g. VS Code "Rebuild Container" runs
     # postCreate without stdin). Dump the log for diagnosis.
     echo "    DEBUG: could not find a session key in bw's output — raw log:"
-    sed 's/^/    | /' "$bw_log"
+    sanitize_bw_output <"$bw_log" | sed 's/^/    | /'
     rm -f "$bw_log"
     [ "$mode" = fatal ] && bw_fail "Bitwarden login produced no session and no recognizable error." \
       "If this setup ran non-interactively (VS Code rebuild), run it from" \
@@ -108,12 +118,29 @@ ensure_bw_session() {
   done
 }
 
+sync_bw_session() {
+  local mode="$1"
+  [ "$bw_synced" = true ] && return 0
+  if NO_COLOR=1 FORCE_COLOR=0 bw sync --session "$BW_SESSION" >/dev/null 2>&1; then
+    bw_synced=true
+    return 0
+  fi
+  if [ "$mode" = fatal ]; then
+    bw_relock_if_ours
+    bw_fail "Failed to sync Bitwarden vault — refusing to use possibly stale credentials."
+  fi
+  echo "    WARN: failed to sync Bitwarden vault — skipping best-effort seed." >&2
+  return 1
+}
+
 # Re-lock the vault only if THIS process unlocked it — a caller-provided
 # BW_SESSION means they manage its lifecycle. Call this after every consumer
 # that reuses the session has run; locking earlier invalidates the session.
 bw_relock_if_ours() {
   if [ "${bw_unlocked_by_us:-false}" = true ]; then
-    bw lock >/dev/null 2>&1 || true
+    if bw lock >/dev/null 2>&1; then
+      bw_unlocked_by_us=false
+    fi
   fi
 }
 
@@ -122,5 +149,72 @@ bw_relock_if_ours() {
 # in BOTH directions: setup-agents.sh's seed on read, and codex-push /
 # codex-pull. Takes the JSON as its first argument.
 codex_auth_is_valid() {
-  printf '%s' "$1" | jq -e '.tokens.refresh_token' >/dev/null 2>&1
+  printf '%s' "$1" | jq -e \
+    '.tokens.refresh_token | type == "string" and length > 0' >/dev/null 2>&1
+}
+
+# Atomically install validated Codex auth JSON without risking a working login.
+# Staging and mode-0600 backup files live beside destination. Replacement and
+# rollback renames stay on one filesystem and never first remove live auth. On
+# any install/verification failure, restore exact prior file when needed, then
+# remove temporary state.
+install_codex_auth_atomically() {
+  local auth_json="$1" destination="$2"
+  local auth_dir staging backup had_destination=false destination_replaced=false installed=false
+
+  codex_auth_is_valid "$auth_json" || return 1
+  auth_dir="$(dirname "$destination")"
+  mkdir -p "$auth_dir" || return 1
+  staging="$(mktemp "$auth_dir/.auth.json.tmp.XXXXXX")" || return 1
+  backup="$(mktemp "$auth_dir/.auth.json.bak.XXXXXX")" || {
+    rm -f -- "$staging"
+    return 1
+  }
+  chmod 600 "$backup" || {
+    rm -f -- "$staging" "$backup"
+    return 1
+  }
+
+  if chmod 600 "$staging" \
+      && printf '%s\n' "$auth_json" >"$staging" \
+      && codex_auth_is_valid "$(cat "$staging")"; then
+    if [ -e "$destination" ]; then
+      had_destination=true
+      cp -- "$destination" "$backup" || {
+        rm -f -- "$staging" "$backup"
+        return 1
+      }
+      chmod 600 "$backup" || {
+        rm -f -- "$staging" "$backup"
+        return 1
+      }
+    fi
+    if mv -- "$staging" "$destination"; then
+      destination_replaced=true
+      if codex_auth_is_valid "$(cat "$destination" 2>/dev/null || true)" \
+          && [ "$(stat -c '%a' "$destination" 2>/dev/null || true)" = 600 ]; then
+        installed=true
+      fi
+    fi
+  fi
+
+  if [ "$installed" != true ]; then
+    if [ "$destination_replaced" = true ] && [ "$had_destination" = true ]; then
+      if mv -- "$backup" "$destination"; then
+        backup=""
+      else
+        echo "ERROR: failed to restore Codex auth; original retained at $backup" >&2
+      fi
+    elif [ "$destination_replaced" = true ]; then
+      rm -f -- "$destination"
+    else
+      rm -f -- "$backup"
+      backup=""
+    fi
+  else
+    rm -f -- "$backup"
+    backup=""
+  fi
+  rm -f -- "$staging"
+  [ "$installed" = true ]
 }
