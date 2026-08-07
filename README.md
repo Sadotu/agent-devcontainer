@@ -117,8 +117,8 @@ The devcontainer bind-mounts **only the project repo** to
   (`~/.claude`, `~/.codex`, `~/.config/gh`, `~/.config/github-app`) that survive
   rebuilds and normally keep credentials off the host and out of the repo.
   Explicit host-side `dc codex-push` and `dc codex-pull --force` are the
-  exception: they also synchronize validated Codex auth to global host
-  `~/.codex/auth.json`.
+  exception: they also synchronize validated Codex auth to the host Codex auth
+  path (`${CODEX_HOME:-$HOME/.codex}/auth.json`).
 - ✅ repo access via a scoped **GitHub App**, not a user PAT — the container
   only ever holds the App's private key and mints short-lived (~1h)
   installation tokens on demand (see
@@ -367,14 +367,18 @@ updates preserve the existing working auth.
 
 - `dc codex-push` — validate the running container's `~/.codex/auth.json`
   (`.tokens.refresh_token` must be present), write it to the vault Notes, then
-  update global host `~/.codex/auth.json`: container source → Bitwarden → host.
+  update the host Codex auth path: container source → Bitwarden → host.
 - `dc codex-pull --force` — retrieve the vault Notes once, then update container
   and global host auth from that same validated copy: Bitwarden → container +
   host. `--force` is required because it can replace a live, fresher local
   token.
 
-Setup, push, and pull use mode-`0600` staging, atomic replacement, rollback to
-the prior auth on failure, and cleanup of operation-only temporary files.
+Each local destination install uses mode-`0600` staging, atomic replacement,
+and rollback of that destination on failure. Sync is not transactional across
+systems: push may update Bitwarden before host installation fails, and pull may
+update the container before host installation fails. Temporary files are
+cleaned unless failed rollback requires retaining and reporting a recovery
+backup.
 
 ## Repository access (GitHub App)
 
