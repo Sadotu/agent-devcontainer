@@ -46,6 +46,23 @@ EOF
   exit 2
 }
 
+# Optional private stream handoff used by host-side `dc`. This is deliberately
+# environment-driven rather than a command: push/pull remain the only public
+# modes. `dc` redirects stdout straight into a host-created mode-0600 file, so
+# validated auth never reaches a terminal or log.
+write_handoff() {
+  [ "${CODEX_AUTH_HANDOFF:-}" = stdout ] || return 0
+  printf '%s\n' "$1"
+}
+
+report() {
+  if [ "${CODEX_AUTH_HANDOFF:-}" = stdout ]; then
+    echo "$*" >&2
+  else
+    echo "$*"
+  fi
+}
+
 do_push() {
   [ -r "$CODEX_AUTH" ] || die "No readable $CODEX_AUTH to push — nothing to upload."
   local local_json
@@ -62,7 +79,8 @@ do_push() {
   updated="$(printf '%s' "$item_json" | jq --arg n "$local_json" '.notes=$n')"
   printf '%s' "$updated" | bw encode | bw edit item "$id" --session "$BW_SESSION" >/dev/null \
     || die "Failed to write Notes to Bitwarden item '$CODEX_ITEM'."
-  echo "Pushed $CODEX_AUTH to Bitwarden item '$CODEX_ITEM'."
+  write_handoff "$local_json"
+  report "Pushed $CODEX_AUTH to Bitwarden item '$CODEX_ITEM'."
 
 }
 
@@ -83,7 +101,8 @@ do_pull() {
   printf '%s\n' "$notes" >"$tmp_auth"
   mv -f -- "$tmp_auth" "$CODEX_AUTH"
   tmp_auth=""
-  echo "Pulled Bitwarden item '$CODEX_ITEM' into $CODEX_AUTH (overwritten)."
+  write_handoff "$notes"
+  report "Pulled Bitwarden item '$CODEX_ITEM' into $CODEX_AUTH (overwritten)."
 }
 
 mode="${1:-}"

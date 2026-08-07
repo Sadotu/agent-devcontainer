@@ -118,3 +118,96 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" frobnicate
 [ "$STATUS" -ne 0 ] || fail "unknown mode: expected failure"
 
 echo "PASS: codex-auth-sync.test.sh"
+
+# --- host dc: validated helper handoff updates host/global auth -------------
+# Fake host prerequisites and devcontainer execution. The fake container helper
+# emits its already-validated value only through internal handoff stdout, which
+# dc redirects into private staging; captured terminal output has no credential.
+DC="$ROOT/.devcontainer/dc"
+HOST_TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP" "$HOST_TMP"' EXIT
+mkdir -p "$HOST_TMP/bin" "$HOST_TMP/home/.codex"
+cat >"$HOST_TMP/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$HOST_TMP/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+last="${!#}"
+if [ "${FAKE_BAD_INSTALLED_MODE:-0}" = 1 ] && [ "$last" = "$CODEX_HOME/auth.json" ]; then
+  printf '644\n'
+else
+  /usr/bin/stat "$@"
+fi
+EOF
+cat >"$HOST_TMP/bin/devcontainer" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = exec ] || exit 90
+shift
+while [ "$1" != env ]; do shift; done
+shift
+case "$1" in
+  CODEX_AUTH_HANDOFF=stdout) ;;
+  *) exit 91 ;;
+esac
+shift
+[ "$1" = /opt/agent-devcontainer/codex-auth-sync.sh ] || exit 92
+shift
+printf '%s\n' "$1" >>"$FAKE_CALLS"
+[ "${FAKE_FAIL_BEFORE_HANDOFF:-0}" = 0 ] || exit 93
+printf '%s\n' "$FAKE_AUTH"
+[ "${FAKE_FAIL_AFTER_HANDOFF:-0}" = 0 ] || exit 94
+EOF
+chmod +x "$HOST_TMP/bin/docker" "$HOST_TMP/bin/devcontainer" "$HOST_TMP/bin/stat"
+mkdir -p "$HOST_TMP/global-codex"
+
+run_dc() {
+  local command="$1"; shift
+  export HOME="$HOST_TMP/home" CODEX_HOME="$HOST_TMP/global-codex"
+  export FAKE_WORKSPACE="$ROOT" FAKE_CALLS="$HOST_TMP/calls"
+  export FAKE_AUTH="${FAKE_AUTH:-$OTHER_VALID}"
+  mkdir -p "$CODEX_HOME"
+  rm -f "$FAKE_CALLS"
+  set +e
+  DC_OUT="$(PATH="$HOST_TMP/bin:$PATH" bash "$DC" "$command" "$@" 2>&1)"; DC_STATUS=$?
+  set -e
+}
+
+printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
+chmod 600 "$HOST_TMP/global-codex/auth.json"
+FAKE_AUTH="$OTHER_VALID" run_dc codex-push
+[ "$DC_STATUS" -eq 0 ] || fail "dc codex-push: expected success, got $DC_STATUS ($DC_OUT)"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc codex-push: host auth not updated from validated handoff"
+[ "$(stat -c '%a' "$HOST_TMP/global-codex/auth.json")" = 600 ] || fail "dc codex-push: host auth mode not 600"
+! grep -Fq 'rt-NEW' <<<"$DC_OUT" || fail "dc codex-push: credential leaked to output"
+
+printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
+FAKE_AUTH="$OTHER_VALID" run_dc codex-pull --force
+[ "$DC_STATUS" -eq 0 ] || fail "dc codex-pull: expected success, got $DC_STATUS ($DC_OUT)"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc codex-pull: host auth not updated"
+[ "$(grep -c '^pull$' "$FAKE_CALLS")" -eq 1 ] || fail "dc codex-pull: expected one vault retrieval"
+
+# Invalid/mis-permissioned handoff refuses replacement and leaves no residue.
+printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
+FAKE_AUTH="$INVALID_AUTH" run_dc codex-push
+[ "$DC_STATUS" -ne 0 ] || fail "dc invalid handoff: expected failure"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$VALID_AUTH" ] || fail "dc invalid handoff: host auth changed"
+# Failure after handoff keeps old host auth. Successful operation removes its
+# staging file and operation-only backup.
+FAKE_AUTH="$OTHER_VALID" FAKE_FAIL_AFTER_HANDOFF=1 run_dc codex-pull --force
+[ "$DC_STATUS" -ne 0 ] || fail "dc helper failure: expected failure"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$VALID_AUTH" ] || fail "dc helper failure: host auth changed"
+unset FAKE_FAIL_AFTER_HANDOFF
+
+# Post-install verification failure restores operation backup.
+FAKE_AUTH="$OTHER_VALID" FAKE_BAD_INSTALLED_MODE=1 run_dc codex-push
+[ "$DC_STATUS" -ne 0 ] || fail "dc host verification failure: expected failure"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$VALID_AUTH" ] || fail "dc host verification failure: previous auth not restored"
+unset FAKE_BAD_INSTALLED_MODE
+if find "$HOST_TMP/global-codex" -maxdepth 1 \( -name '.codex-auth-handoff.*' -o -name '.codex-auth-backup.*' -o -name '.auth.json.stage.*' \) | grep -q .; then
+  fail "dc sync: staging or backup residue remains"
+fi
+
+echo "PASS: dc Codex host-auth sync"
