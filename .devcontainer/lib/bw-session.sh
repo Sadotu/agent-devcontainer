@@ -125,7 +125,10 @@ sync_bw_session() {
     bw_synced=true
     return 0
   fi
-  [ "$mode" = fatal ] && bw_fail "Failed to sync Bitwarden vault — refusing to use possibly stale credentials."
+  if [ "$mode" = fatal ]; then
+    bw_relock_if_ours
+    bw_fail "Failed to sync Bitwarden vault — refusing to use possibly stale credentials."
+  fi
   echo "    WARN: failed to sync Bitwarden vault — skipping best-effort seed." >&2
   return 1
 }
@@ -135,7 +138,9 @@ sync_bw_session() {
 # that reuses the session has run; locking earlier invalidates the session.
 bw_relock_if_ours() {
   if [ "${bw_unlocked_by_us:-false}" = true ]; then
-    bw lock >/dev/null 2>&1 || true
+    if bw lock >/dev/null 2>&1; then
+      bw_unlocked_by_us=false
+    fi
   fi
 }
 

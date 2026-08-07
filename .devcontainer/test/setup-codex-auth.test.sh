@@ -29,6 +29,15 @@ case "$1 ${2:-}" in
   "sync --session")
     [ "${BW_SYNC_FAIL:-0}" = 0 ]
     ;;
+  "login --check")
+    exit 0
+    ;;
+  "unlock ")
+    echo 'export BW_SESSION="setup-owned-session"'
+    ;;
+  "lock ")
+    : >"$BW_LOCK_FILE"
+    ;;
   *)
     echo "UNEXPECTED bw call: $*" >&2
     exit 9
@@ -38,6 +47,21 @@ EOF
 chmod +x "$TMP/bin/bw"
 export PATH="$TMP/bin:$PATH"
 export BW_SESSION='fake-session'
+
+# Fatal sync failure after library-owned unlock must relock even when caller
+# has no later cleanup path (bw_fail exits immediately).
+BW_LOCK_FILE="$TMP/bw-lock"
+export BW_LOCK_FILE
+rm -f "$BW_LOCK_FILE"
+set +e
+OWNED_SYNC_OUT="$(env -u BW_SESSION BW_SYNC_FAIL=1 bash -c '
+  source "$1"
+  ensure_bw_session fatal
+' _ "$LIB" 2>&1)"
+OWNED_SYNC_STATUS=$?
+set -e
+[ "$OWNED_SYNC_STATUS" -ne 0 ] || fail "owned unlock sync failure: expected fatal failure"
+[ -f "$BW_LOCK_FILE" ] || fail "owned unlock sync failure: vault was left unlocked ($OWNED_SYNC_OUT)"
 
 # Run exactly the production Codex setup block, bounded by its section markers.
 run_setup() {

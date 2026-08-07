@@ -53,7 +53,8 @@ case "$1 ${2:-}" in
     base64 -d | jq -r '.notes' >"$VAULT_NOTES_FILE"
     ;;
   "lock ")
-    printf 'locked\n' >"$LOCK_FILE"
+    count="$(cat "$LOCK_FILE" 2>/dev/null || echo 0)"
+    printf '%s\n' "$((count + 1))" >"$LOCK_FILE"
     ;;
   *)
     echo "UNEXPECTED bw call: $*" >&2
@@ -117,6 +118,15 @@ BW_SYNC_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" push
 BW_SYNC_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
 [ "$STATUS" -ne 0 ] || fail "pull bw sync failure: expected failure"
 [ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull bw sync failure: local auth changed"
+unset BW_SYNC_FAIL
+
+# Fatal sync failure after helper-owned unlock must not leave vault unlocked.
+unset BW_SESSION
+BW_SYNC_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
+[ "$STATUS" -ne 0 ] || fail "owned unlock sync failure: expected failure"
+[ -f "$LOCK_FILE" ] || fail "owned unlock sync failure: vault must be relocked"
+[ "$(cat "$LOCK_FILE")" = 1 ] || fail "owned unlock sync failure: vault relocked more than once"
+export BW_SESSION='fake-session'
 unset BW_SYNC_FAIL
 
 # --- push: invalid local auth.json -> refuse, vault untouched ----------------
