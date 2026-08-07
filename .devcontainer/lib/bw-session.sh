@@ -124,3 +124,52 @@ bw_relock_if_ours() {
 codex_auth_is_valid() {
   printf '%s' "$1" | jq -e '.tokens.refresh_token' >/dev/null 2>&1
 }
+
+# Atomically install validated Codex auth JSON without risking a working login.
+# Staging and backup files live beside the destination so every rename stays on
+# one filesystem. On any install/verification failure, restore the exact prior
+# file (when present), then remove all temporary state.
+install_codex_auth_atomically() {
+  local auth_json="$1" destination="$2"
+  local auth_dir staging backup had_destination=false destination_replaced=false installed=false
+
+  codex_auth_is_valid "$auth_json" || return 1
+  auth_dir="$(dirname "$destination")"
+  mkdir -p "$auth_dir" || return 1
+  staging="$(mktemp "$auth_dir/.auth.json.tmp.XXXXXX")" || return 1
+  backup="$(mktemp "$auth_dir/.auth.json.bak.XXXXXX")" || {
+    rm -f -- "$staging"
+    return 1
+  }
+  rm -f -- "$backup"
+
+  if chmod 600 "$staging" \
+      && printf '%s\n' "$auth_json" >"$staging" \
+      && codex_auth_is_valid "$(cat "$staging")"; then
+    if [ -e "$destination" ]; then
+      had_destination=true
+      mv -- "$destination" "$backup" || {
+        rm -f -- "$staging" "$backup"
+        return 1
+      }
+    fi
+    if mv -- "$staging" "$destination"; then
+      destination_replaced=true
+      if codex_auth_is_valid "$(cat "$destination" 2>/dev/null || true)" \
+          && [ "$(stat -c '%a' "$destination" 2>/dev/null || true)" = 600 ]; then
+        installed=true
+      fi
+    fi
+  fi
+
+  if [ "$installed" != true ]; then
+    if [ "$had_destination" = true ] || [ "$destination_replaced" = true ]; then
+      rm -f -- "$destination"
+    fi
+    if [ "$had_destination" = true ]; then
+      mv -- "$backup" "$destination" || true
+    fi
+  fi
+  rm -f -- "$staging" "$backup"
+  [ "$installed" = true ]
+}
