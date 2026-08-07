@@ -99,13 +99,19 @@ esac
                         break
             finally:
                 if status is None:
-                    os.kill(pid, signal.SIGKILL)
-                    _, status = os.waitpid(pid, 0)
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        _, status = os.waitpid(pid, 0)
+                    except ChildProcessError:
+                        pass
                 os.close(master)
 
             rendered = output.decode(errors="replace")
             self.assertEqual(os.waitstatus_to_exitcode(status), 0, rendered)
-            self.assertIn("[REDACTED]", rendered)
+            self.assertIn('BW_SESSION="[REDACTED]"', rendered)
             self.assertNotIn("pty-secret", rendered)
             return rendered
 

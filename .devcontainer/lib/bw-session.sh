@@ -44,7 +44,10 @@ sanitize_bw_output() {
     if [ "$pending" = "$marker" ]; then
       printf '%s[REDACTED]' "$marker"
       while IFS= read -r -N 1 character; do
-        [ "$character" = '"' ] && break
+        if [ "$character" = '"' ]; then
+          printf '"'
+          break
+        fi
       done
       pending=""
       continue
