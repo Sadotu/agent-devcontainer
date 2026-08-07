@@ -21,6 +21,7 @@ mkdir -p "$TMP/bin"
 cat >"$TMP/bin/bw" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >>"$BW_CALL_LOG"
 case "$1 ${2:-}" in
   "get notes")
     [ "$3" = "codex-auth-token" ] || exit 9
@@ -47,6 +48,7 @@ EOF
 chmod +x "$TMP/bin/bw"
 export PATH="$TMP/bin:$PATH"
 export BW_SESSION='fake-session'
+export BW_CALL_LOG="$TMP/bw-calls"
 
 # Fatal sync failure after library-owned unlock must relock even when caller
 # has no later cleanup path (bw_fail exits immediately).
@@ -70,7 +72,7 @@ run_setup() {
   export VAULT_NOTES_FILE="$TMP/vault-notes"
   rm -rf "$HOME"
   mkdir -p "$HOME/.codex"
-  printf '%s' "$OLD_AUTH" >"$HOME/.codex/auth.json"
+  printf '%s' "$INVALID_AUTH" >"$HOME/.codex/auth.json"
   chmod 644 "$HOME/.codex/auth.json"
   rm -f "$VAULT_NOTES_FILE"
   [ "$notes" = __MISSING__ ] || printf '%s' "$notes" >"$VAULT_NOTES_FILE"
@@ -85,9 +87,25 @@ run_setup() {
 }
 
 assert_preserved() {
-  [ "$(cat "$HOME/.codex/auth.json")" = "$OLD_AUTH" ] || fail "$1: existing auth changed"
+  [ "$(cat "$HOME/.codex/auth.json")" = "$INVALID_AUTH" ] || fail "$1: existing auth changed"
   [ "$(stat -c '%a' "$HOME/.codex/auth.json")" = 644 ] || fail "$1: existing mode changed"
 }
+
+# Valid persisted auth must not touch Bitwarden at all.
+export HOME="$TMP/valid-local-home"
+mkdir -p "$HOME/.codex"
+printf '%s' "$OLD_AUTH" >"$HOME/.codex/auth.json"
+: >"$BW_CALL_LOG"
+set +e
+OUT="$({
+  source "$LIB"
+  sed -n '/^# --- Codex CLI auth/,/^# Lock the vault/p' "$SETUP" | sed '$d' | source /dev/stdin
+} 2>&1)"
+STATUS=$?
+set -e
+[ "$STATUS" -eq 0 ] || fail "valid local auth: setup failed ($OUT)"
+[ ! -s "$BW_CALL_LOG" ] || fail "valid local auth: Bitwarden called ($(cat "$BW_CALL_LOG"))"
+grep -qi 'present.*usable' <<<"$OUT" || fail "valid local auth: missing usable report ($OUT)"
 
 assert_no_residue() {
   if find "$HOME/.codex" -maxdepth 1 \( -name '.auth.json.tmp.*' -o -name '.auth.json.bak.*' \) | grep -q .; then

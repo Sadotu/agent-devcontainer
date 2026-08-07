@@ -152,7 +152,7 @@ if [ -f "$CODEX_CONFIG" ] && grep -qiE '^\[mcp_servers\..*github.*\]' "$CODEX_CO
 fi
 # ------------------------------------------------------------------------------
 
-echo "==> Secrets bootstrap (Bitwarden)"
+echo "==> Post-create credential setup (Bitwarden)"
 # GitHub App credentials are REQUIRED — without them no App token can be
 # minted, so nothing in this container can push, PR, or use `gh`. If they
 # aren't already in the persisted volume (first start, or after `dc
@@ -304,10 +304,8 @@ fi
 # works headless, with no interactive `codex login --device-auth` step. Codex
 # keeps its ChatGPT subscription login in ~/.codex/auth.json (access + refresh
 # tokens); once present it auto-refreshes that file in place, and the persisted
-# ~/.codex volume carries it across rebuilds. Fetch every setup run so a vault
-# update refreshes an existing file too. Like the Claude token, this calls
-# ensure_bw_session itself rather than depending on the App fetch having
-# unlocked the vault.
+# ~/.codex volume carries it across rebuilds. A valid persisted file needs no
+# vault access; absent or invalid auth falls back to the existing vault seed.
 # NOT fatal — if it's missing, `codex login --device-auth` remains the manual
 # fallback.
 #
@@ -317,7 +315,9 @@ fi
 # over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
 # the item name (name or GUID).
 CODEX_AUTH="$HOME/.codex/auth.json"
-if ensure_bw_session besteffort; then
+if [ -r "$CODEX_AUTH" ] && codex_auth_is_valid "$(cat "$CODEX_AUTH")"; then
+  echo "    Codex auth.json present and usable."
+elif ensure_bw_session besteffort; then
   codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
   codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
   if [ -n "$codex_notes" ]; then
