@@ -13,6 +13,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 OLD_AUTH='{"tokens":{"refresh_token":"old-refresh","access_token":"old-access"}}'
 NEW_AUTH='{"tokens":{"refresh_token":"new-refresh","access_token":"new-access"}}'
 INVALID_AUTH='{"tokens":{"access_token":"no-refresh"}}'
+EMPTY_REFRESH='{"tokens":{"refresh_token":""}}'
+NULL_REFRESH='{"tokens":{"refresh_token":null}}'
+NONSTRING_REFRESH='{"tokens":{"refresh_token":123}}'
 
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/bw" <<'EOF'
@@ -77,6 +80,14 @@ assert_preserved "invalid notes"
 grep -qi "not valid Codex auth JSON" <<<"$OUT" || fail "invalid notes: missing clear warning ($OUT)"
 assert_no_residue "invalid notes"
 
+for invalid_case in "$EMPTY_REFRESH" "$NULL_REFRESH" "$NONSTRING_REFRESH"; do
+  run_setup "$invalid_case"
+  [ "$STATUS" -eq 0 ] || fail "strict invalid notes: best-effort setup failed ($OUT)"
+  assert_preserved "strict invalid notes"
+  grep -qi "not valid Codex auth JSON" <<<"$OUT" || fail "strict invalid notes: missing clear warning ($OUT)"
+  assert_no_residue "strict invalid notes"
+done
+
 run_setup __MISSING__
 [ "$STATUS" -eq 0 ] || fail "missing notes: best-effort setup failed ($OUT)"
 assert_preserved "missing notes"
@@ -87,8 +98,10 @@ assert_no_residue "missing notes"
 ROLLBACK_HOME="$TMP/rollback-home"
 ROLLBACK_AUTH="$ROLLBACK_HOME/.codex/auth.json"
 ROLLBACK_LOG="$TMP/rollback-mv.log"
+ROLLBACK_MODE_LOG="$TMP/rollback-mode.log"
 mkdir -p "$ROLLBACK_HOME/.codex" "$TMP/fail-bin"
 printf '%s' "$OLD_AUTH" >"$ROLLBACK_AUTH"
+chmod 644 "$ROLLBACK_AUTH"
 cat >"$TMP/fail-bin/mv" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -96,6 +109,7 @@ source_path="${@: -2:1}"
 destination="${@: -1}"
 if [[ "$source_path" == */.auth.json.bak.* && "$destination" == */auth.json ]]; then
   printf '%s\n' "$source_path" >"$ROLLBACK_LOG"
+  /usr/bin/stat -c '%a' "$source_path" >"$ROLLBACK_MODE_LOG"
   exit 1
 fi
 exec /bin/mv "$@"
@@ -111,7 +125,7 @@ fi
 exec /usr/bin/stat "$@"
 EOF
 chmod +x "$TMP/fail-bin/mv" "$TMP/fail-bin/stat"
-export ROLLBACK_LOG
+export ROLLBACK_LOG ROLLBACK_MODE_LOG
 set +e
 ROLLBACK_OUT="$(PATH="$TMP/fail-bin:$PATH" bash -c '
   source "$1"
@@ -124,6 +138,7 @@ set -e
 retained_backup="$(cat "$ROLLBACK_LOG")"
 [ -f "$retained_backup" ] || fail "rollback failure: sole old-auth backup was deleted"
 [ "$(cat "$retained_backup")" = "$OLD_AUTH" ] || fail "rollback failure: retained backup changed"
+[ "$(cat "$ROLLBACK_MODE_LOG")" = 600 ] || fail "rollback failure: credential backup was not mode 600"
 grep -Fq "$retained_backup" <<<"$ROLLBACK_OUT" \
   || fail "rollback failure: retained backup location not reported ($ROLLBACK_OUT)"
 

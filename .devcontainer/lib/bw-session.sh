@@ -122,7 +122,8 @@ bw_relock_if_ours() {
 # in BOTH directions: setup-agents.sh's seed on read, and codex-push /
 # codex-pull. Takes the JSON as its first argument.
 codex_auth_is_valid() {
-  printf '%s' "$1" | jq -e '.tokens.refresh_token' >/dev/null 2>&1
+  printf '%s' "$1" | jq -e \
+    '.tokens.refresh_token | type == "string" and length > 0' >/dev/null 2>&1
 }
 
 # Atomically install validated Codex auth JSON without risking a working login.
@@ -150,6 +151,15 @@ install_codex_auth_atomically() {
       had_destination=true
       mv -- "$destination" "$backup" || {
         rm -f -- "$staging" "$backup"
+        return 1
+      }
+      chmod 600 "$backup" || {
+        if mv -- "$backup" "$destination"; then
+          backup=""
+        else
+          echo "ERROR: failed to restore Codex auth; original retained at $backup" >&2
+        fi
+        rm -f -- "$staging"
         return 1
       }
     fi

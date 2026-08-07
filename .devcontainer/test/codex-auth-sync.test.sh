@@ -16,6 +16,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 VALID_AUTH='{"tokens":{"refresh_token":"rt-abc","access_token":"at-xyz"}}'
 OTHER_VALID='{"tokens":{"refresh_token":"rt-NEW","access_token":"at-NEW"}}'
 INVALID_AUTH='{"tokens":{"access_token":"at-only"}}'
+EMPTY_REFRESH='{"tokens":{"refresh_token":""}}'
+NULL_REFRESH='{"tokens":{"refresh_token":null}}'
+NONSTRING_REFRESH='{"tokens":{"refresh_token":false}}'
 
 # --- Fake bw: a single-item vault whose Notes live in $VAULT_NOTES_FILE ------
 mkdir -p "$TMP/bin"
@@ -105,6 +108,12 @@ run_sync "$INVALID_AUTH" "$OTHER_VALID" push
 [ "$STATUS" -ne 0 ] || fail "push invalid: expected failure"
 [ "$(cat "$VAULT_NOTES_FILE")" = "$OTHER_VALID" ] || fail "push invalid: vault Notes must be untouched"
 
+for invalid_case in "$EMPTY_REFRESH" "$NULL_REFRESH" "$NONSTRING_REFRESH"; do
+  run_sync "$invalid_case" "$OTHER_VALID" push
+  [ "$STATUS" -ne 0 ] || fail "push strict invalid: expected failure"
+  [ "$(cat "$VAULT_NOTES_FILE")" = "$OTHER_VALID" ] || fail "push strict invalid: vault Notes changed"
+done
+
 # --- push: no local auth.json -> refuse --------------------------------------
 run_sync - "$OTHER_VALID" push
 [ "$STATUS" -ne 0 ] || fail "push missing: expected failure"
@@ -146,6 +155,12 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" pull
 run_sync "$VALID_AUTH" "$INVALID_AUTH" pull --force
 [ "$STATUS" -ne 0 ] || fail "pull invalid-vault: expected failure"
 [ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull invalid-vault: local auth must be untouched"
+
+for invalid_case in "$EMPTY_REFRESH" "$NULL_REFRESH" "$NONSTRING_REFRESH"; do
+  run_sync "$VALID_AUTH" "$invalid_case" pull --force
+  [ "$STATUS" -ne 0 ] || fail "pull strict invalid vault: expected failure"
+  [ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull strict invalid vault: local auth changed"
+done
 
 # --- failure after helper-owned unlock -> vault relocked ---------------------
 unset BW_SESSION
