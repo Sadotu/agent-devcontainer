@@ -5,7 +5,7 @@ Secure, reusable Docker devcontainer for Claude Code and Codex workers.
 
 - Docker with a reachable daemon (`docker ps` works).
 - Dev Container CLI: `npm i -g @devcontainers/cli`.
-- The `container-coding-agent` GitHub App installed on this repository.
+- The `container-coding-agent` GitHub App installed on your project repository.
 - Claude and Codex worker credentials (see below).
 
 ## Create project files
@@ -30,8 +30,9 @@ GitHub App key; no `.pem` is written to the host.
 Claude workers need `CLAUDE_CODE_OAUTH_TOKEN` exported before `dc up` (create
 it with `claude setup-token`), or a Bitwarden item named
 `claude-code-oauth-token` containing the token in Notes. Codex workers need
-Bitwarden item `codex-auth-token` with `~/.codex/auth.json` in Notes; repair
-with `codex login --device-auth`, then run `dc codex-push`.
+Bitwarden item `codex-auth-token` with `~/.codex/auth.json` in Notes. To repair,
+inside the container run `codex login --device-auth`, exit, then on the host run
+`./.devcontainer/dc codex-push`.
 
 ## Daily use
 
@@ -40,7 +41,6 @@ with `codex login --device-auth`, then run `dc codex-push`.
 ./.devcontainer/dc shell
 start work
 ```
-
 Common commands:
 
 ```bash
@@ -55,5 +55,5 @@ Common commands:
 Security boundary: only project repository is bind-mounted at
 `/workspaces/<project-name>`; host home, SSH keys, cloud credentials, browser profiles,
 password stores, and Docker socket are not mounted. Agent and App credentials persist
-in container-side named volumes. Use `ghx` for GitHub CLI; never run `gh auth
-login` or `gh auth setup-git`.
+in container-side named volumes. Inside the container, use `ghx` for GitHub CLI;
+never run `gh auth login` or `gh auth setup-git`.

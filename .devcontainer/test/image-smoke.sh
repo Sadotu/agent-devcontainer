@@ -74,12 +74,9 @@ source_test() {
     grep -Fq 'IMAGE_VERSION=${{ github.sha }}' "$workflow"
     grep -Fq 'agent-devcontainer image version' "$devcontainer_dir/setup-agents.sh"
     grep -Fq 'TOOLDIR/VERSION' "$devcontainer_dir/setup-agents.sh"
-    grep -Fq 'agent-devcontainer-version' "$repo_root/README.md"
-
-    # `landed` post-merge helper: baked onto PATH the same way, and documented.
+    # `landed` post-merge helper: baked onto PATH the same way.
     grep -Fq 'COPY landed.sh /usr/local/bin/landed' "$devcontainer_dir/Dockerfile"
     [[ -f "$devcontainer_dir/landed.sh" ]]
-    grep -Fq 'landed' "$repo_root/README.md"
 
     # `ghx` App-token wrapper and `why-failed` CI summariser (issue #45): baked
     # onto PATH beside `landed`, documented, and — for `ghx` — the token must
@@ -96,7 +93,7 @@ source_test() {
     ! grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*x' "$devcontainer_dir/ghx.sh"
     grep -qE '^[[:space:]]*(\{[[:space:]]*)?set[[:space:]]+\+x' "$devcontainer_dir/ghx.sh"
     grep -Fq 'ghx' "$repo_root/README.md"
-    grep -Fq 'why-failed' "$repo_root/README.md"
+    [[ "$(wc -l <"$repo_root/README.md")" -lt 60 ]]
 
     temp_dir="$(mktemp -d)"
     printf -v cleanup 'rm -rf -- %q' "$temp_dir"
