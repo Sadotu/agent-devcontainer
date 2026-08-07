@@ -36,6 +36,7 @@ bw_fail() {
 # Returns 0 with BW_SESSION set on success.
 bw_unlocked_by_us=false
 bw_session_announced=false
+bw_synced=false
 sanitize_bw_output() {
   sed -E 's/(BW_SESSION=")[^"]*/\1[REDACTED]/g'
 }
@@ -47,7 +48,8 @@ ensure_bw_session() {
       echo "    Reusing existing BW_SESSION."
       bw_session_announced=true
     fi
-    return 0
+    sync_bw_session "$mode"
+    return
   fi
   if ! command -v bw >/dev/null 2>&1; then
     [ "$mode" = fatal ] && bw_fail "Bitwarden CLI (bw) not found in the image — cannot fetch the GitHub App key."
@@ -80,7 +82,8 @@ ensure_bw_session() {
       rm -f "$bw_log"
       bw_unlocked_by_us=true
       bw_session_announced=true
-      return 0
+      sync_bw_session "$mode"
+      return
     fi
     # No session — classify the failure from bw's own output.
     if grep -qiE 'ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network error|cannot connect|failed to fetch' "$bw_log"; then
@@ -113,6 +116,18 @@ ensure_bw_session() {
     echo "    WARN: Bitwarden not available non-interactively — skipping best-effort seed." >&2
     return 1
   done
+}
+
+sync_bw_session() {
+  local mode="$1"
+  [ "$bw_synced" = true ] && return 0
+  if NO_COLOR=1 FORCE_COLOR=0 bw sync --session "$BW_SESSION" >/dev/null 2>&1; then
+    bw_synced=true
+    return 0
+  fi
+  [ "$mode" = fatal ] && bw_fail "Failed to sync Bitwarden vault — refusing to use possibly stale credentials."
+  echo "    WARN: failed to sync Bitwarden vault — skipping best-effort seed." >&2
+  return 1
 }
 
 # Re-lock the vault only if THIS process unlocked it — a caller-provided

@@ -41,6 +41,11 @@ case "$1 ${2:-}" in
   "unlock ")
     echo 'export BW_SESSION="owned-session"'
     ;;
+  "sync --session")
+    count="$(cat "$BW_SYNC_COUNT_FILE" 2>/dev/null || echo 0)"
+    printf '%s\n' "$((count + 1))" >"$BW_SYNC_COUNT_FILE"
+    [ "${BW_SYNC_FAIL:-0}" = 0 ]
+    ;;
   "encode ")
     base64 -w0
     ;;
@@ -88,8 +93,9 @@ run_sync() {
   CODEX_AUTH="$TMP/auth.json"
   VAULT_NOTES_FILE="$TMP/vault-notes"
   LOCK_FILE="$TMP/bw-locked"
-  export CODEX_AUTH VAULT_NOTES_FILE LOCK_FILE
-  rm -f "$CODEX_AUTH" "$VAULT_NOTES_FILE" "$LOCK_FILE" "$TMP"/.auth.json.tmp.*
+  BW_SYNC_COUNT_FILE="$TMP/bw-sync-count"
+  export CODEX_AUTH VAULT_NOTES_FILE LOCK_FILE BW_SYNC_COUNT_FILE
+  rm -f "$CODEX_AUTH" "$VAULT_NOTES_FILE" "$LOCK_FILE" "$BW_SYNC_COUNT_FILE" "$TMP"/.auth.json.tmp.*
   [ "$local_contents" = '-' ] || printf '%s' "$local_contents" >"$CODEX_AUTH"
   [ "$vault_contents" = '-' ] || printf '%s' "$vault_contents" >"$VAULT_NOTES_FILE"
   set +e
@@ -102,6 +108,16 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" push
 [ "$STATUS" -eq 0 ] || fail "push valid: expected success, got $STATUS ($OUT)"
 [ "$(cat "$VAULT_NOTES_FILE")" = "$VALID_AUTH" ] || fail "push valid: vault Notes not updated to local auth"
 [ ! -e "$LOCK_FILE" ] || fail "push valid: caller-provided session must not be relocked"
+[ "$(cat "$BW_SYNC_COUNT_FILE")" = 1 ] || fail "push valid: expected exactly one bw sync"
+
+# --- bw sync failure: fatal sync preserves local/vault state -----------------
+BW_SYNC_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" push
+[ "$STATUS" -ne 0 ] || fail "push bw sync failure: expected failure"
+[ "$(cat "$VAULT_NOTES_FILE")" = "$OTHER_VALID" ] || fail "push bw sync failure: vault changed"
+BW_SYNC_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
+[ "$STATUS" -ne 0 ] || fail "pull bw sync failure: expected failure"
+[ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull bw sync failure: local auth changed"
+unset BW_SYNC_FAIL
 
 # --- push: invalid local auth.json -> refuse, vault untouched ----------------
 run_sync "$INVALID_AUTH" "$OTHER_VALID" push
@@ -218,9 +234,13 @@ case "$1" in
   CODEX_AUTH_HANDOFF=stdout) ;;
   *) exit 91 ;;
 esac
+export CODEX_AUTH_HANDOFF=stdout
 shift
 [ "$1" = /opt/agent-devcontainer/codex-auth-sync.sh ] || exit 92
 shift
+if [ "${FAKE_REAL_HELPER:-0}" = 1 ]; then
+  exec bash "$SYNC" "$@"
+fi
 printf '%s\n' "$1" >>"$FAKE_CALLS"
 [ "${FAKE_FAIL_BEFORE_HANDOFF:-0}" = 0 ] || exit 93
 printf '%s\n' "$FAKE_AUTH"
@@ -233,6 +253,7 @@ run_dc() {
   local command="$1"; shift
   export HOME="$HOST_TMP/home" CODEX_HOME="$HOST_TMP/global-codex"
   export FAKE_WORKSPACE="$ROOT" FAKE_CALLS="$HOST_TMP/calls"
+  export SYNC
   export FAKE_AUTH="${FAKE_AUTH:-$OTHER_VALID}"
   mkdir -p "$CODEX_HOME"
   rm -f "$FAKE_CALLS"
@@ -248,6 +269,14 @@ FAKE_AUTH="$OTHER_VALID" run_dc codex-push
 [ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc codex-push: host auth not updated from validated handoff"
 [ "$(stat -c '%a' "$HOST_TMP/global-codex/auth.json")" = 600 ] || fail "dc codex-push: host auth mode not 600"
 ! grep -Fq 'rt-NEW' <<<"$DC_OUT" || fail "dc codex-push: credential leaked to output"
+
+# Real helper status must not mix with JSON-only handoff stdout.
+printf '%s' "$OTHER_VALID" >"$CODEX_AUTH"
+printf '%s' "$VALID_AUTH" >"$VAULT_NOTES_FILE"
+FAKE_REAL_HELPER=1 run_dc codex-push
+[ "$DC_STATUS" -eq 0 ] || fail "dc real helper handoff: expected success, got $DC_STATUS ($DC_OUT)"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc real helper handoff: host auth not updated"
+unset FAKE_REAL_HELPER
 
 printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
 FAKE_AUTH="$OTHER_VALID" run_dc codex-pull --force

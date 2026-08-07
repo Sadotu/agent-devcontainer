@@ -26,6 +26,9 @@ case "$1 ${2:-}" in
     [ "$3" = "codex-auth-token" ] || exit 9
     [ -r "$VAULT_NOTES_FILE" ] && cat "$VAULT_NOTES_FILE"
     ;;
+  "sync --session")
+    [ "${BW_SYNC_FAIL:-0}" = 0 ]
+    ;;
   *)
     echo "UNEXPECTED bw call: $*" >&2
     exit 9
@@ -79,6 +82,13 @@ run_setup "$INVALID_AUTH"
 assert_preserved "invalid notes"
 grep -qi "not valid Codex auth JSON" <<<"$OUT" || fail "invalid notes: missing clear warning ($OUT)"
 assert_no_residue "invalid notes"
+
+BW_SYNC_FAIL=1 run_setup "$NEW_AUTH"
+[ "$STATUS" -eq 0 ] || fail "bw sync failure: best-effort setup failed ($OUT)"
+assert_preserved "bw sync failure"
+grep -qi "sync Bitwarden" <<<"$OUT" || fail "bw sync failure: missing clear warning ($OUT)"
+assert_no_residue "bw sync failure"
+unset BW_SYNC_FAIL
 
 for invalid_case in "$EMPTY_REFRESH" "$NULL_REFRESH" "$NONSTRING_REFRESH"; do
   run_setup "$invalid_case"

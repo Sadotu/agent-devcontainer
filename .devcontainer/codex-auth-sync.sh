@@ -60,6 +60,14 @@ report() {
   fi
 }
 
+ensure_sync_session() {
+  if [ "${CODEX_AUTH_HANDOFF:-}" = stdout ]; then
+    ensure_bw_session fatal >&2
+  else
+    ensure_bw_session fatal
+  fi
+}
+
 do_push() {
   [ -r "$CODEX_AUTH" ] || die "No readable $CODEX_AUTH to push — nothing to upload."
   local local_json
@@ -67,7 +75,7 @@ do_push() {
   codex_auth_is_valid "$local_json" \
     || die "$CODEX_AUTH is not valid Codex auth JSON (.tokens.refresh_token missing) — refusing to push."
 
-  ensure_bw_session fatal
+  ensure_sync_session
 
   local item_json id updated
   item_json="$(bw get item "$CODEX_ITEM" --session "$BW_SESSION" 2>/dev/null || true)"
@@ -82,7 +90,7 @@ do_push() {
 }
 
 do_pull() {
-  ensure_bw_session fatal
+  ensure_sync_session
 
   local notes
   notes="$(bw get notes "$CODEX_ITEM" --session "$BW_SESSION" 2>/dev/null || true)"
