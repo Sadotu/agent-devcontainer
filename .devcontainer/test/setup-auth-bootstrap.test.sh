@@ -40,7 +40,10 @@ export HOME="$TMP/persisted-home"
 export GITHUB_APP_DIR="$HOME/.config/github-app"
 mkdir -p "$GITHUB_APP_DIR" "$HOME/.claude" "$HOME/.codex"
 printf '12345\n' >"$GITHUB_APP_DIR/app-id"
-printf 'persisted-key\n' >"$GITHUB_APP_DIR/private-key.pem"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out "$GITHUB_APP_DIR/private-key.pem" >/dev/null 2>&1
+openssl pkey -noout -in "$GITHUB_APP_DIR/private-key.pem" >/dev/null 2>&1 \
+  || fail "persisted App private-key fixture is invalid"
 printf 'export CLAUDE_CODE_OAUTH_TOKEN=persisted-token\n' >"$HOME/.claude/oauth-env"
 printf '%s\n' '{"tokens":{"refresh_token":"persisted-refresh"}}' >"$HOME/.codex/auth.json"
 : >"$BW_CALLS"
