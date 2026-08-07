@@ -83,4 +83,48 @@ assert_preserved "missing notes"
 grep -qi "no .*notes" <<<"$OUT" || fail "missing notes: missing clear report ($OUT)"
 assert_no_residue "missing notes"
 
+# --- failed rollback retains the only old-auth copy and reports its path -----
+ROLLBACK_HOME="$TMP/rollback-home"
+ROLLBACK_AUTH="$ROLLBACK_HOME/.codex/auth.json"
+ROLLBACK_LOG="$TMP/rollback-mv.log"
+mkdir -p "$ROLLBACK_HOME/.codex" "$TMP/fail-bin"
+printf '%s' "$OLD_AUTH" >"$ROLLBACK_AUTH"
+cat >"$TMP/fail-bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+destination="${@: -1}"
+if [[ "$source_path" == */.auth.json.bak.* && "$destination" == */auth.json ]]; then
+  printf '%s\n' "$source_path" >"$ROLLBACK_LOG"
+  exit 1
+fi
+exec /bin/mv "$@"
+EOF
+cat >"$TMP/fail-bin/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+if [[ "$target" == */auth.json ]]; then
+  printf '644\n'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+chmod +x "$TMP/fail-bin/mv" "$TMP/fail-bin/stat"
+export ROLLBACK_LOG
+set +e
+ROLLBACK_OUT="$(PATH="$TMP/fail-bin:$PATH" bash -c '
+  source "$1"
+  install_codex_auth_atomically "$2" "$3"
+' _ "$LIB" "$NEW_AUTH" "$ROLLBACK_AUTH" 2>&1)"
+ROLLBACK_STATUS=$?
+set -e
+[ "$ROLLBACK_STATUS" -ne 0 ] || fail "rollback failure: helper unexpectedly succeeded"
+[ -s "$ROLLBACK_LOG" ] || fail "rollback failure: restore path was not exercised"
+retained_backup="$(cat "$ROLLBACK_LOG")"
+[ -f "$retained_backup" ] || fail "rollback failure: sole old-auth backup was deleted"
+[ "$(cat "$retained_backup")" = "$OLD_AUTH" ] || fail "rollback failure: retained backup changed"
+grep -Fq "$retained_backup" <<<"$ROLLBACK_OUT" \
+  || fail "rollback failure: retained backup location not reported ($ROLLBACK_OUT)"
+
 echo "PASS: setup-codex-auth.test.sh"

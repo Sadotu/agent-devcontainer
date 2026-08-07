@@ -167,9 +167,16 @@ install_codex_auth_atomically() {
       rm -f -- "$destination"
     fi
     if [ "$had_destination" = true ]; then
-      mv -- "$backup" "$destination" || true
+      if mv -- "$backup" "$destination"; then
+        backup=""
+      else
+        echo "ERROR: failed to restore Codex auth; original retained at $backup" >&2
+      fi
     fi
+  else
+    rm -f -- "$backup"
+    backup=""
   fi
-  rm -f -- "$staging" "$backup"
+  rm -f -- "$staging"
   [ "$installed" = true ]
 }
