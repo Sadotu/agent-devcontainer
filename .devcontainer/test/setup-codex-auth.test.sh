@@ -94,6 +94,33 @@ assert_preserved "missing notes"
 grep -qi "no .*notes" <<<"$OUT" || fail "missing notes: missing clear report ($OUT)"
 assert_no_residue "missing notes"
 
+# --- replacement remains atomic: live destination exists until rename -------
+ATOMIC_HOME="$TMP/atomic-home"
+ATOMIC_AUTH="$ATOMIC_HOME/.codex/auth.json"
+mkdir -p "$ATOMIC_HOME/.codex" "$TMP/atomic-bin"
+printf '%s' "$OLD_AUTH" >"$ATOMIC_AUTH"
+cat >"$TMP/atomic-bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+destination="${@: -1}"
+if [[ "$source_path" == */.auth.json.tmp.* && "$destination" == */auth.json ]] && [ ! -e "$destination" ]; then
+  echo "destination absent before atomic replacement" >&2
+  exit 97
+fi
+exec /bin/mv "$@"
+EOF
+chmod +x "$TMP/atomic-bin/mv"
+set +e
+ATOMIC_OUT="$(PATH="$TMP/atomic-bin:$PATH" bash -c '
+  source "$1"
+  install_codex_auth_atomically "$2" "$3"
+' _ "$LIB" "$NEW_AUTH" "$ATOMIC_AUTH" 2>&1)"
+ATOMIC_STATUS=$?
+set -e
+[ "$ATOMIC_STATUS" -eq 0 ] || fail "atomic replacement: live destination disappeared ($ATOMIC_OUT)"
+[ "$(cat "$ATOMIC_AUTH")" = "$NEW_AUTH" ] || fail "atomic replacement: new auth not installed"
+
 # --- failed rollback retains the only old-auth copy and reports its path -----
 ROLLBACK_HOME="$TMP/rollback-home"
 ROLLBACK_AUTH="$ROLLBACK_HOME/.codex/auth.json"

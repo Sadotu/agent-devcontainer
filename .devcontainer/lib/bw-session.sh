@@ -36,6 +36,10 @@ bw_fail() {
 # Returns 0 with BW_SESSION set on success.
 bw_unlocked_by_us=false
 bw_session_announced=false
+sanitize_bw_output() {
+  sed -E 's/(BW_SESSION=")[^"]*/\1[REDACTED]/g'
+}
+
 ensure_bw_session() {
   local mode="$1"
   if [ -n "${BW_SESSION:-}" ]; then
@@ -53,16 +57,19 @@ ensure_bw_session() {
   local bw_attempt=1 bw_log
   while :; do
     bw_log="$(mktemp)"
+    chmod 600 "$bw_log"
     if NO_COLOR=1 FORCE_COLOR=0 bw login --check >/dev/null 2>&1; then
       # Already logged in (login state persisted from a prior run in this
       # container) — just needs unlocking.
       echo "    Bitwarden already logged in — unlocking (interactive)..."
-      NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 | tee "$bw_log" >&2 || true
+      NO_COLOR=1 FORCE_COLOR=0 bw unlock 2>&1 \
+        | tee "$bw_log" | sanitize_bw_output >&2 || true
     else
       # A successful `bw login` already unlocks the vault as part of
       # authenticating — no separate `bw unlock` needed.
       echo "    Logging into Bitwarden (interactive — one-time per container)..."
-      NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 | tee "$bw_log" >&2 || true
+      NO_COLOR=1 FORCE_COLOR=0 bw login 2>&1 \
+        | tee "$bw_log" | sanitize_bw_output >&2 || true
     fi
     # Strip ANSI escapes before parsing. `|| true` guards the whole pipeline:
     # under `set -eo pipefail`, grep finding no match (the expected outcome on
@@ -98,7 +105,7 @@ ensure_bw_session() {
     # interactive terminal to prompt on (e.g. VS Code "Rebuild Container" runs
     # postCreate without stdin). Dump the log for diagnosis.
     echo "    DEBUG: could not find a session key in bw's output — raw log:"
-    sed 's/^/    | /' "$bw_log"
+    sanitize_bw_output <"$bw_log" | sed 's/^/    | /'
     rm -f "$bw_log"
     [ "$mode" = fatal ] && bw_fail "Bitwarden login produced no session and no recognizable error." \
       "If this setup ran non-interactively (VS Code rebuild), run it from" \
@@ -127,9 +134,10 @@ codex_auth_is_valid() {
 }
 
 # Atomically install validated Codex auth JSON without risking a working login.
-# Staging and backup files live beside the destination so every rename stays on
-# one filesystem. On any install/verification failure, restore the exact prior
-# file (when present), then remove all temporary state.
+# Staging and mode-0600 backup files live beside destination. Replacement and
+# rollback renames stay on one filesystem and never first remove live auth. On
+# any install/verification failure, restore exact prior file when needed, then
+# remove temporary state.
 install_codex_auth_atomically() {
   local auth_json="$1" destination="$2"
   local auth_dir staging backup had_destination=false destination_replaced=false installed=false
@@ -142,24 +150,22 @@ install_codex_auth_atomically() {
     rm -f -- "$staging"
     return 1
   }
-  rm -f -- "$backup"
+  chmod 600 "$backup" || {
+    rm -f -- "$staging" "$backup"
+    return 1
+  }
 
   if chmod 600 "$staging" \
       && printf '%s\n' "$auth_json" >"$staging" \
       && codex_auth_is_valid "$(cat "$staging")"; then
     if [ -e "$destination" ]; then
       had_destination=true
-      mv -- "$destination" "$backup" || {
+      cp -- "$destination" "$backup" || {
         rm -f -- "$staging" "$backup"
         return 1
       }
       chmod 600 "$backup" || {
-        if mv -- "$backup" "$destination"; then
-          backup=""
-        else
-          echo "ERROR: failed to restore Codex auth; original retained at $backup" >&2
-        fi
-        rm -f -- "$staging"
+        rm -f -- "$staging" "$backup"
         return 1
       }
     fi
@@ -173,15 +179,17 @@ install_codex_auth_atomically() {
   fi
 
   if [ "$installed" != true ]; then
-    if [ "$had_destination" = true ] || [ "$destination_replaced" = true ]; then
-      rm -f -- "$destination"
-    fi
-    if [ "$had_destination" = true ]; then
+    if [ "$destination_replaced" = true ] && [ "$had_destination" = true ]; then
       if mv -- "$backup" "$destination"; then
         backup=""
       else
         echo "ERROR: failed to restore Codex auth; original retained at $backup" >&2
       fi
+    elif [ "$destination_replaced" = true ]; then
+      rm -f -- "$destination"
+    else
+      rm -f -- "$backup"
+      backup=""
     fi
   else
     rm -f -- "$backup"

@@ -167,6 +167,7 @@ unset BW_SESSION
 run_sync "$VALID_AUTH" "$INVALID_AUTH" pull --force
 [ "$STATUS" -ne 0 ] || fail "pull invalid owned session: expected failure"
 [ -f "$LOCK_FILE" ] || fail "pull invalid owned session: vault must be relocked"
+! grep -Fq 'owned-session' <<<"$OUT" || fail "pull owned session: BW_SESSION leaked to command output"
 export BW_SESSION='fake-session'
 
 # --- unknown mode -> usage/nonzero -------------------------------------------
