@@ -38,7 +38,23 @@ bw_unlocked_by_us=false
 bw_session_announced=false
 bw_synced=false
 sanitize_bw_output() {
-  sed -E 's/(BW_SESSION=")[^"]*/\1[REDACTED]/g'
+  local marker='BW_SESSION="' pending="" character
+  while IFS= read -r -N 1 character; do
+    pending+="$character"
+    if [ "$pending" = "$marker" ]; then
+      printf '%s[REDACTED]' "$marker"
+      while IFS= read -r -N 1 character; do
+        [ "$character" = '"' ] && break
+      done
+      pending=""
+      continue
+    fi
+    while [ -n "$pending" ] && [ "${marker#"$pending"}" = "$marker" ]; do
+      printf '%s' "${pending:0:1}"
+      pending="${pending:1}"
+    done
+  done
+  printf '%s' "$pending"
 }
 
 ensure_bw_session() {
