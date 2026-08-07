@@ -348,27 +348,31 @@ For Claude, run `claude setup-token` on a host with a browser, export the
 result as `CLAUDE_CODE_OAUTH_TOKEN`, then run `dc up`; the project template
 forwards that variable. Alternatively, put the token in the Notes of a
 Bitwarden item named `claude-code-oauth-token`; `setup-agents.sh` stores it in
-the project's Claude volume. For Codex, put a working `~/.codex/auth.json` in
-the Notes of a Bitwarden item named `codex-auth-token`, or run
-`codex login --device-auth` once inside the project container. Do not use these
-project-worker paths as substitutes for Sentinel's separate provider login.
+the project's Claude volume. For Codex, the Notes of the Bitwarden item named
+`codex-auth-token` are the canonical copy of `~/.codex/auth.json`. You can also
+repair login with `codex login --device-auth` inside the project container;
+follow it with `dc codex-push` to make the repaired credentials canonical and
+update global host auth. Do not use these project-worker paths as substitutes
+for Sentinel's separate provider login.
 
 ### Syncing Codex auth across containers
 
-Codex refresh tokens rotate on use, so keeping the `codex-auth-token` vault item
-current means pushing a freshly-refreshed token up, and any container pulling it
-must be able to overwrite its own (possibly stale) copy. `dc setup` only seeds
-`~/.codex/auth.json` when it is missing, so two `dc` subcommands drive the sync
-(both run the work inside the container, where `bw` and the `~/.codex` volume
-live):
+Codex refresh tokens rotate on use, so the `codex-auth-token` Notes are the
+canonical copy shared across containers. Every rebuild and `dc setup` fetches
+and validates those Notes, then refreshes container `~/.codex/auth.json` even
+when the persisted volume already has a file. Missing, invalid, or failed vault
+updates preserve the existing working auth.
 
 - `dc codex-push` — validate the running container's `~/.codex/auth.json`
-  (`.tokens.refresh_token` must be present) and write it to the
-  `codex-auth-token` item's Notes.
-- `dc codex-pull --force` — overwrite the container's `~/.codex/auth.json` from
-  that vault item. `--force` is required: it clobbers a possibly live,
-  already-refreshed local token, and dropping a stale vault copy over a fresher
-  local one invalidates the working session.
+  (`.tokens.refresh_token` must be present), write it to the vault Notes, then
+  update global host `~/.codex/auth.json`: container source → Bitwarden → host.
+- `dc codex-pull --force` — retrieve the vault Notes once, then update container
+  and global host auth from that same validated copy: Bitwarden → container +
+  host. `--force` is required because it can replace a live, fresher local
+  token.
+
+Setup, push, and pull use mode-`0600` staging, atomic replacement, rollback to
+the prior auth on failure, and cleanup of operation-only temporary files.
 
 ## Repository access (GitHub App)
 
@@ -553,13 +557,13 @@ CLI updates + plugin/skill installs itself. What's left only after
    `codex login`, then create a vault item **named** `codex-auth-token` and
    paste the contents of `~/.codex/auth.json` into its **Notes** (Notes, not a
    custom field — the file is ~4 KB, over Bitwarden's 5000-char field limit).
-   Setup reads that item by name and writes `~/.codex/auth.json` on a fresh
-   volume. To use a different item name, set `BW_CODEX_AUTH_ITEM_ID=<item name
-   or GUID>` in `devcontainer.json`'s `containerEnv`. Manual fallback (no
-   Bitwarden): run `codex login --device-auth` inside the container — its
-   normal browser callback can't reach the container, so the device flow prints
-   a code + URL you approve in any browser. Either way, auth persists in the
-   `~/.codex` volume across rebuilds and auto-refreshes.
+   Those Notes are canonical. Every rebuild or `dc setup` validates and installs
+   them even over auth in the persisted volume, while a failed fetch or install
+   preserves existing auth. To use a different item name, set
+   `BW_CODEX_AUTH_ITEM_ID=<item name or GUID>` in `devcontainer.json`'s
+   `containerEnv`. Manual repair: run `codex login --device-auth` inside the
+   container — its browser callback cannot reach the container, so approve the
+   printed code and URL in any browser — then run `dc codex-push`.
 
 Never `gh auth login` / `gh auth setup-git` — this container is
 GitHub-App-only.
