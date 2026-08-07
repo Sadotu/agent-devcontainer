@@ -54,6 +54,26 @@ case "$1 ${2:-}" in
 esac
 EOF
 chmod +x "$TMP/bin/bw"
+# Inject a post-replacement verification failure for container-side pull.
+# Shared atomic installer must restore old auth and remove operation residue.
+cat >"$TMP/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_arg="${@: -2:1}"
+destination_arg="${@: -1}"
+if [ "${FAKE_CONTAINER_REPLACE_FAIL:-0}" = 1 ] &&
+   [[ "$source_arg" == */.auth.json.tmp.* ]] &&
+   [ "$destination_arg" = "$CODEX_AUTH" ]; then
+  exit 96
+fi
+/bin/mv "$@"
+if [ "${FAKE_CONTAINER_VERIFY_FAIL:-0}" = 1 ] &&
+   [[ "$source_arg" == */.auth.json.tmp.* ]] &&
+   [ "$destination_arg" = "$CODEX_AUTH" ]; then
+  chmod 644 "$destination_arg"
+fi
+EOF
+chmod +x "$TMP/bin/mv"
 export PATH="$TMP/bin:$PATH"
 export EXPECT_ITEM='codex-auth-token'
 export BW_SESSION='fake-session'   # ensure_bw_session reuses this, no unlock
@@ -95,6 +115,27 @@ run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
 [ "$(cat "$CODEX_AUTH")" = "$OTHER_VALID" ] || fail "pull --force: local auth not overwritten from vault"
 perms="$(stat -c '%a' "$CODEX_AUTH")"
 [ "$perms" = 600 ] || fail "pull --force: expected mode 600, got $perms"
+if find "$TMP" -maxdepth 1 \( -name '.auth.json.tmp.*' -o -name '.auth.json.bak.*' \) | grep -q .; then
+  fail "pull --force success: staging or backup residue remains"
+fi
+
+# --- pull replacement failure -> old auth restored, no residue --------------
+FAKE_CONTAINER_REPLACE_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
+[ "$STATUS" -ne 0 ] || fail "pull replacement failure: expected failure"
+[ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull replacement failure: old auth not restored"
+if find "$TMP" -maxdepth 1 \( -name '.auth.json.tmp.*' -o -name '.auth.json.bak.*' \) | grep -q .; then
+  fail "pull replacement failure: staging or backup residue remains"
+fi
+unset FAKE_CONTAINER_REPLACE_FAIL
+
+# --- pull install verification failure -> old auth restored, no residue ------
+FAKE_CONTAINER_VERIFY_FAIL=1 run_sync "$VALID_AUTH" "$OTHER_VALID" pull --force
+[ "$STATUS" -ne 0 ] || fail "pull install verification failure: expected failure"
+[ "$(cat "$CODEX_AUTH")" = "$VALID_AUTH" ] || fail "pull install verification failure: old auth not restored"
+if find "$TMP" -maxdepth 1 \( -name '.auth.json.tmp.*' -o -name '.auth.json.bak.*' \) | grep -q .; then
+  fail "pull install verification failure: staging or backup residue remains"
+fi
+unset FAKE_CONTAINER_VERIFY_FAIL
 
 # --- pull WITHOUT --force -> refuse, local auth untouched --------------------
 run_sync "$VALID_AUTH" "$OTHER_VALID" pull
@@ -141,6 +182,15 @@ else
   /usr/bin/stat "$@"
 fi
 EOF
+cat >"$HOST_TMP/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_arg="${@: -2:1}"
+if [ "${FAKE_HOST_ROLLBACK_FAIL:-0}" = 1 ] && [[ "$source_arg" == */.codex-auth-backup.* ]]; then
+  exit 95
+fi
+/bin/mv "$@"
+EOF
 cat >"$HOST_TMP/bin/devcontainer" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -160,7 +210,7 @@ printf '%s\n' "$1" >>"$FAKE_CALLS"
 printf '%s\n' "$FAKE_AUTH"
 [ "${FAKE_FAIL_AFTER_HANDOFF:-0}" = 0 ] || exit 94
 EOF
-chmod +x "$HOST_TMP/bin/docker" "$HOST_TMP/bin/devcontainer" "$HOST_TMP/bin/stat"
+chmod +x "$HOST_TMP/bin/docker" "$HOST_TMP/bin/devcontainer" "$HOST_TMP/bin/stat" "$HOST_TMP/bin/mv"
 mkdir -p "$HOST_TMP/global-codex"
 
 run_dc() {
@@ -206,6 +256,17 @@ FAKE_AUTH="$OTHER_VALID" FAKE_BAD_INSTALLED_MODE=1 run_dc codex-push
 [ "$DC_STATUS" -ne 0 ] || fail "dc host verification failure: expected failure"
 [ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$VALID_AUTH" ] || fail "dc host verification failure: previous auth not restored"
 unset FAKE_BAD_INSTALLED_MODE
+
+# Failed rollback retains sole old-auth backup and reports exact path.
+printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
+FAKE_AUTH="$OTHER_VALID" FAKE_BAD_INSTALLED_MODE=1 FAKE_HOST_ROLLBACK_FAIL=1 run_dc codex-push
+[ "$DC_STATUS" -ne 0 ] || fail "dc rollback failure: expected failure"
+retained_backup="$(sed -n 's/^ERROR: failed to restore previous host Codex auth from \(.*\)\.$/\1/p' <<<"$DC_OUT")"
+[ -n "$retained_backup" ] || fail "dc rollback failure: retained backup path not reported ($DC_OUT)"
+[ -f "$retained_backup" ] || fail "dc rollback failure: sole old-auth backup was deleted"
+[ "$(cat "$retained_backup")" = "$VALID_AUTH" ] || fail "dc rollback failure: retained backup changed"
+rm -f -- "$retained_backup"
+unset FAKE_BAD_INSTALLED_MODE FAKE_HOST_ROLLBACK_FAIL
 if find "$HOST_TMP/global-codex" -maxdepth 1 \( -name '.codex-auth-handoff.*' -o -name '.codex-auth-backup.*' -o -name '.auth.json.stage.*' \) | grep -q .; then
   fail "dc sync: staging or backup residue remains"
 fi

@@ -131,6 +131,9 @@ sync_codex_auth() {
       mv -f -- "$backup" "$host_auth" || {
         echo "ERROR: failed to restore previous host Codex auth from $backup." >&2
         rm -f -- "$handoff"
+        # Sole copy of previous auth. Exempt it from EXIT cleanup so operator
+        # can recover from exact path reported above.
+        CODEX_SYNC_BACKUP=""
         return 1
       }
       backup=""
