@@ -114,9 +114,11 @@ The devcontainer bind-mounts **only the project repo** to
   password stores, or Docker socket
 - ✅ internet access (package installs, docs lookup)
 - ✅ persistent, container-side named volumes for agent auth
-  (`~/.claude`, `~/.codex`, `~/.config/gh`, `~/.config/github-app`) —
-  tokens/keys are entered manually after first start, survive rebuilds, and
-  never touch the host or the repo
+  (`~/.claude`, `~/.codex`, `~/.config/gh`, `~/.config/github-app`) that survive
+  rebuilds and normally keep credentials off the host and out of the repo.
+  Explicit host-side `dc codex-push` and `dc codex-pull --force` are the
+  exception: they also synchronize validated Codex auth to global host
+  `~/.codex/auth.json`.
 - ✅ repo access via a scoped **GitHub App**, not a user PAT — the container
   only ever holds the App's private key and mints short-lived (~1h)
   installation tokens on demand (see
