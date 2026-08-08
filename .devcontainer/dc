@@ -16,11 +16,11 @@
 #   ./.devcontainer/dc exec ...   run a one-off command inside
 #   ./.devcontainer/dc codex-push
 #                                  upload the container's ~/.codex/auth.json to
-#                                  the Bitwarden 'codex-auth-token' Notes
+#                                  Bitwarden, then update host/global auth.json
 #   ./.devcontainer/dc codex-pull --force
-#                                  overwrite the container's ~/.codex/auth.json
-#                                  from the vault (--force required — clobbers a
-#                                  possibly live, already-refreshed local token)
+#                                  overwrite container and host/global auth.json
+#                                  from vault (--force required — clobbers a
+#                                  possibly live, already-refreshed token)
 #   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
 #   ./.devcontainer/dc sentinel-update
 #                                  pull + recreate usage-sentinel (data kept)
@@ -54,6 +54,104 @@ require devcontainer "Install with: npm i -g @devcontainers/cli"
 
 cmd="${1:-}"
 shift || true
+
+codex_auth_file_valid() {
+  jq -e '.tokens.refresh_token | type == "string" and length > 0' "$1" >/dev/null 2>&1
+}
+
+CODEX_SYNC_HANDOFF=""
+CODEX_SYNC_STAGE=""
+CODEX_SYNC_BACKUP=""
+
+cleanup_codex_sync() {
+  rm -f -- "$CODEX_SYNC_HANDOFF" "$CODEX_SYNC_STAGE" "$CODEX_SYNC_BACKUP"
+}
+
+sync_codex_auth() {
+  local mode="$1"; shift
+  local host_auth="${CODEX_HOME:-$HOME/.codex}/auth.json"
+  local handoff auth_dir stage backup="" had_original=0
+
+  require jq "Install jq to validate Codex auth before updating host credentials."
+  auth_dir="$(dirname "$host_auth")"
+  mkdir -p "$auth_dir"
+  handoff="$(mktemp "$auth_dir/.codex-auth-handoff.XXXXXX")"
+  CODEX_SYNC_HANDOFF="$handoff"
+  trap cleanup_codex_sync EXIT
+  chmod 600 "$handoff"
+
+  if ! devcontainer exec --workspace-folder "$ROOT" env \
+    CODEX_AUTH_HANDOFF=stdout \
+    /opt/agent-devcontainer/codex-auth-sync.sh "$mode" "$@" >"$handoff"; then
+    rm -f -- "$handoff"
+    return 1
+  fi
+
+  if [ ! -f "$handoff" ] || [ -L "$handoff" ]; then
+    echo "ERROR: container returned unsafe Codex auth handoff; host auth unchanged." >&2
+    rm -f -- "$handoff"
+    return 1
+  fi
+  if [ "$(stat -c '%a' "$handoff")" != 600 ]; then
+    echo "ERROR: container returned Codex auth handoff without mode 0600 ($(stat -c '%a' "$handoff")); host auth unchanged." >&2
+    rm -f -- "$handoff"
+    return 1
+  fi
+  if ! codex_auth_file_valid "$handoff"; then
+    echo "ERROR: container returned invalid Codex auth handoff; host auth unchanged." >&2
+    rm -f -- "$handoff"
+    return 1
+  fi
+
+  stage="$(mktemp "$auth_dir/.auth.json.stage.XXXXXX")"
+  CODEX_SYNC_STAGE="$stage"
+  chmod 600 "$stage"
+  if ! cp -- "$handoff" "$stage"; then
+    rm -f -- "$handoff" "$stage"
+    return 1
+  fi
+
+  if [ -e "$host_auth" ]; then
+    had_original=1
+    backup="$(mktemp "$auth_dir/.codex-auth-backup.XXXXXX")"
+    CODEX_SYNC_BACKUP="$backup"
+    chmod 600 "$backup"
+    if ! cp -- "$host_auth" "$backup"; then
+      rm -f -- "$handoff" "$stage" "$backup"
+      return 1
+    fi
+  fi
+
+  if ! mv -f -- "$stage" "$host_auth" || \
+     ! codex_auth_file_valid "$host_auth" || \
+     [ "$(stat -c '%a' "$host_auth")" != 600 ]; then
+    echo "ERROR: failed to install valid mode-0600 host Codex auth; restoring previous file." >&2
+    rm -f -- "$stage"
+    if [ "$had_original" -eq 1 ]; then
+      mv -f -- "$backup" "$host_auth" || {
+        echo "ERROR: failed to restore previous host Codex auth from $backup." >&2
+        rm -f -- "$handoff"
+        # Sole copy of previous auth. Exempt it from EXIT cleanup so operator
+        # can recover from exact path reported above.
+        CODEX_SYNC_BACKUP=""
+        return 1
+      }
+      backup=""
+      CODEX_SYNC_BACKUP=""
+    else
+      rm -f -- "$host_auth"
+    fi
+    rm -f -- "$handoff" "$backup"
+    return 1
+  fi
+
+  rm -f -- "$handoff" "$backup"
+  CODEX_SYNC_HANDOFF=""
+  CODEX_SYNC_STAGE=""
+  CODEX_SYNC_BACKUP=""
+  trap - EXIT
+  echo "Updated host Codex auth at $host_auth."
+}
 
 # Re-pull the referenced image before creating the container. Without this,
 # a floating tag like :latest silently reuses whatever digest is in the
@@ -255,13 +353,9 @@ case "$cmd" in
     devcontainer exec --workspace-folder "$ROOT" /opt/agent-devcontainer/setup-agents.sh
     ;;
   codex-push|codex-pull)
-    # Codex-auth sync. The work runs INSIDE the container (that's where `bw`
-    # and the ~/.codex volume live) — `dc` only dispatches, like `setup`, which
-    # also relies on `devcontainer exec` attaching an interactive terminal for
-    # the Bitwarden unlock prompt. The `codex-{push,pull}` command name maps to
-    # the helper's `{push,pull}` mode.
-    devcontainer exec --workspace-folder "$ROOT" \
-      /opt/agent-devcontainer/codex-auth-sync.sh "${cmd#codex-}" "$@"
+    # Vault/container work runs inside container, where `bw` and ~/.codex live.
+    # Validated handoff then atomically updates host/global auth.json.
+    sync_codex_auth "${cmd#codex-}" "$@"
     ;;
   exec)
     devcontainer exec --workspace-folder "$ROOT" "$@"

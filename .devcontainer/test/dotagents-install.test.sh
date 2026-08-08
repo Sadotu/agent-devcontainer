@@ -5,7 +5,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HELPER="$ROOT/.devcontainer/dotagents-install.sh"
 SETUP="$ROOT/.devcontainer/setup-agents.sh"
 DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
-README="$ROOT/README.md"
 LOCK="$ROOT/agents.lock"
 GITIGNORE="$ROOT/.gitignore"
 TMP="$(mktemp -d)"
@@ -43,11 +42,39 @@ assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$S
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
 assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFILE"
 
-# Documentation must distinguish routine frozen installs from explicit upgrades.
-assert_file_contains 'Routine setup uses the committed `agents.lock` revisions with a frozen install.' "$README"
-assert_file_contains 'From the project root, run:' "$README"
-assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh --upgrade "$PWD" /opt/agent-devcontainer' "$README"
-assert_file_not_contains '`dotagents install` picks up' "$README"
+# Frozen installation must materialize every locked skill in both agent homes.
+mkdir "$TMP/smoke"
+cp "$LOCK" "$TMP/smoke/agents.lock"
+bash "$HELPER" "$TMP/smoke" "$ROOT/.devcontainer"
+assert_file_equals "$ROOT/.devcontainer/agents.toml" "$TMP/smoke/agents.toml"
+find "$TMP/smoke" -printf '%y %P -> %l\n' | sort > "$TMP/smoke.paths.first"
+find "$TMP/smoke" -type f -exec sha256sum {} \; | \
+  sed "s|$TMP/smoke/||" | sort > "$TMP/smoke.files.first"
+cp "$TMP/smoke/agents.toml" "$TMP/smoke.agents.toml.first"
+cp "$TMP/smoke/agents.lock" "$TMP/smoke.agents.lock.first"
+bash "$HELPER" "$TMP/smoke" "$ROOT/.devcontainer"
+find "$TMP/smoke" -printf '%y %P -> %l\n' | sort > "$TMP/smoke.paths.second"
+find "$TMP/smoke" -type f -exec sha256sum {} \; | \
+  sed "s|$TMP/smoke/||" | sort > "$TMP/smoke.files.second"
+assert_file_equals "$TMP/smoke.paths.first" "$TMP/smoke.paths.second"
+assert_file_equals "$TMP/smoke.files.first" "$TMP/smoke.files.second"
+assert_file_equals "$TMP/smoke.agents.toml.first" "$TMP/smoke/agents.toml"
+assert_file_equals "$TMP/smoke.agents.lock.first" "$TMP/smoke/agents.lock"
+for agent_home in .claude .agents; do
+  for skill in github-issue review-pr; do
+    skill_dir="$TMP/smoke/$agent_home/skills/$skill"
+    [[ -f "$skill_dir/SKILL.md" ]] || \
+      fail "$agent_home $skill SKILL.md was not installed"
+    [[ $skill == github-issue ]] && required_script=isolate.sh || \
+      required_script=publish-review.sh
+    [[ -f "$skill_dir/scripts/$required_script" ]] || \
+      fail "$agent_home $skill $required_script was not installed"
+  done
+done
+assert_file_contains 'review-pr:v1' \
+  "$TMP/smoke/.claude/skills/review-pr/scripts/lib/marker.sh"
+assert_file_contains 'review-pr:v1' \
+  "$TMP/smoke/.agents/skills/review-pr/scripts/lib/marker.sh"
 
 mkdir -p "$TMP/bin" "$TMP/tool"
 printf 'skills = ["default"]\n' > "$TMP/tool/agents.toml"

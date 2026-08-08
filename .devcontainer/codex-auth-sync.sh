@@ -21,12 +21,9 @@ source "$SCRIPT_DIR/lib/bw-session.sh"
 CODEX_AUTH="${CODEX_AUTH:-$HOME/.codex/auth.json}"
 # Same well-known item (and override) setup-agents.sh seeds from.
 CODEX_ITEM="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
-tmp_auth=""
-
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 cleanup() {
-  [ -z "$tmp_auth" ] || rm -f -- "$tmp_auth"
   bw_relock_if_ours
 }
 trap cleanup EXIT
@@ -46,6 +43,31 @@ EOF
   exit 2
 }
 
+# Optional private stream handoff used by host-side `dc`. This is deliberately
+# environment-driven rather than a command: push/pull remain the only public
+# modes. `dc` redirects stdout straight into a host-created mode-0600 file, so
+# validated auth never reaches a terminal or log.
+write_handoff() {
+  [ "${CODEX_AUTH_HANDOFF:-}" = stdout ] || return 0
+  printf '%s\n' "$1"
+}
+
+report() {
+  if [ "${CODEX_AUTH_HANDOFF:-}" = stdout ]; then
+    echo "$*" >&2
+  else
+    echo "$*"
+  fi
+}
+
+ensure_sync_session() {
+  if [ "${CODEX_AUTH_HANDOFF:-}" = stdout ]; then
+    ensure_bw_session fatal >&2
+  else
+    ensure_bw_session fatal
+  fi
+}
+
 do_push() {
   [ -r "$CODEX_AUTH" ] || die "No readable $CODEX_AUTH to push — nothing to upload."
   local local_json
@@ -53,7 +75,7 @@ do_push() {
   codex_auth_is_valid "$local_json" \
     || die "$CODEX_AUTH is not valid Codex auth JSON (.tokens.refresh_token missing) — refusing to push."
 
-  ensure_bw_session fatal
+  ensure_sync_session
 
   local item_json id updated
   item_json="$(bw get item "$CODEX_ITEM" --session "$BW_SESSION" 2>/dev/null || true)"
@@ -62,12 +84,13 @@ do_push() {
   updated="$(printf '%s' "$item_json" | jq --arg n "$local_json" '.notes=$n')"
   printf '%s' "$updated" | bw encode | bw edit item "$id" --session "$BW_SESSION" >/dev/null \
     || die "Failed to write Notes to Bitwarden item '$CODEX_ITEM'."
-  echo "Pushed $CODEX_AUTH to Bitwarden item '$CODEX_ITEM'."
+  write_handoff "$local_json"
+  report "Pushed $CODEX_AUTH to Bitwarden item '$CODEX_ITEM'."
 
 }
 
 do_pull() {
-  ensure_bw_session fatal
+  ensure_sync_session
 
   local notes
   notes="$(bw get notes "$CODEX_ITEM" --session "$BW_SESSION" 2>/dev/null || true)"
@@ -75,15 +98,10 @@ do_pull() {
   codex_auth_is_valid "$notes" \
     || die "'$CODEX_ITEM' Notes are not valid Codex auth JSON — refusing to overwrite $CODEX_AUTH."
 
-  local auth_dir
-  auth_dir="$(dirname "$CODEX_AUTH")"
-  mkdir -p "$auth_dir"
-  tmp_auth="$(mktemp "$auth_dir/.auth.json.tmp.XXXXXX")"
-  chmod 600 "$tmp_auth"
-  printf '%s\n' "$notes" >"$tmp_auth"
-  mv -f -- "$tmp_auth" "$CODEX_AUTH"
-  tmp_auth=""
-  echo "Pulled Bitwarden item '$CODEX_ITEM' into $CODEX_AUTH (overwritten)."
+  install_codex_auth_atomically "$notes" "$CODEX_AUTH" \
+    || die "Failed to install pulled Codex auth; previous auth restored when possible."
+  write_handoff "$notes"
+  report "Pulled Bitwarden item '$CODEX_ITEM' into $CODEX_AUTH (overwritten)."
 }
 
 mode="${1:-}"

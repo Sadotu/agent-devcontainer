@@ -152,7 +152,7 @@ if [ -f "$CODEX_CONFIG" ] && grep -qiE '^\[mcp_servers\..*github.*\]' "$CODEX_CO
 fi
 # ------------------------------------------------------------------------------
 
-echo "==> Secrets bootstrap (Bitwarden)"
+echo "==> Post-create credential setup (Bitwarden)"
 # GitHub App credentials are REQUIRED — without them no App token can be
 # minted, so nothing in this container can push, PR, or use `gh`. If they
 # aren't already in the persisted volume (first start, or after `dc
@@ -304,9 +304,8 @@ fi
 # works headless, with no interactive `codex login --device-auth` step. Codex
 # keeps its ChatGPT subscription login in ~/.codex/auth.json (access + refresh
 # tokens); once present it auto-refreshes that file in place, and the persisted
-# ~/.codex volume carries it across rebuilds. So only seed when the file is
-# absent (fresh volume). Like the Claude token, this calls ensure_bw_session
-# itself rather than depending on the App fetch having unlocked the vault.
+# ~/.codex volume carries it across rebuilds. A valid persisted file needs no
+# vault access; absent or invalid auth falls back to the existing vault seed.
 # NOT fatal — if it's missing, `codex login --device-auth` remains the manual
 # fallback.
 #
@@ -316,25 +315,26 @@ fi
 # over Bitwarden's 5000-char custom-field limit. BW_CODEX_AUTH_ITEM_ID overrides
 # the item name (name or GUID).
 CODEX_AUTH="$HOME/.codex/auth.json"
-if [ -r "$CODEX_AUTH" ]; then
-  echo "    Codex CLI auth: present and already seeded; no fetch needed."
+if [ -r "$CODEX_AUTH" ] && codex_auth_is_valid "$(cat "$CODEX_AUTH")"; then
+  echo "    Codex auth.json present and usable."
 elif ensure_bw_session besteffort; then
   codex_item="${BW_CODEX_AUTH_ITEM_ID:-codex-auth-token}"
   codex_notes="$(bw get notes "$codex_item" --session "$BW_SESSION" 2>/dev/null || true)"
   if [ -n "$codex_notes" ]; then
-    mkdir -p "$HOME/.codex"
     # Validate it's real Codex auth JSON (carries a refresh token → self-renews)
     # before trusting it, so a wrong/truncated note fails here, not at runtime.
     # Same check codex-push/codex-pull apply, via the shared lib.
     if codex_auth_is_valid "$codex_notes"; then
-      printf '%s\n' "$codex_notes" > "$CODEX_AUTH"
-      chmod 600 "$CODEX_AUTH"
-      echo "    Codex auth.json seeded from Bitwarden item '$codex_item'."
+      if install_codex_auth_atomically "$codex_notes" "$CODEX_AUTH"; then
+        echo "    Codex auth.json refreshed from Bitwarden item '$codex_item'."
+      else
+        echo "    WARN: failed to install '$codex_item' Notes; existing Codex auth preserved." >&2
+      fi
     else
-      echo "    WARN: '$codex_item' notes aren't valid Codex auth JSON — skipping seed." >&2
+      echo "    WARN: '$codex_item' Notes are not valid Codex auth JSON — existing auth preserved." >&2
     fi
   else
-    echo "    (No '$codex_item' notes in vault — run 'codex login --device-auth' to authenticate.)"
+    echo "    WARN: no '$codex_item' Notes in vault — existing Codex auth preserved." >&2
   fi
 fi
 # Lock the vault back up only if we unlocked it — a caller-provided

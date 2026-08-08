@@ -142,3 +142,14 @@ RUN chmod 0755 /usr/local/bin/agent-devcontainer-version
 # or other agent coupling; a human running it gets identical output.
 COPY landed.sh /usr/local/bin/landed
 RUN chmod 0755 /usr/local/bin/landed
+
+# `ghx <gh args...>` — run `gh` as the GitHub App without the ~100-char
+# token-minting prefix, and without ever tracing the token onto a command line.
+# Plain bash + gh; falls back to ambient `gh` auth outside the container.
+COPY ghx.sh /usr/local/bin/ghx
+RUN chmod 0755 /usr/local/bin/ghx
+
+# `why-failed [run-id]` — the decisive lines of a failed CI run (step, assertion,
+# exit code) instead of a full `--log-failed` dump. Plain bash + gh.
+COPY why-failed.sh /usr/local/bin/why-failed
+RUN chmod 0755 /usr/local/bin/why-failed
