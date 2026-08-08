@@ -50,10 +50,10 @@ Common commands:
 ./.devcontainer/dc down             # stop/remove container; volumes remain
 ./.devcontainer/dc codex-push       # container auth -> Bitwarden + host
 ./.devcontainer/dc codex-pull --force # Bitwarden auth -> container + host
+./.devcontainer/test-all.sh [IMAGE_TAG] # run all suites; omit tag for source-only
 ```
 
-Security boundary: only project repository is bind-mounted at
-`/workspaces/<project-name>`; host home, SSH keys, cloud credentials, browser profiles,
-password stores, and Docker socket are not mounted. Agent and App credentials persist
-in container-side named volumes. Inside the container, use `ghx` for GitHub CLI;
+Security boundary: only project repository is bind-mounted at `/workspaces/<project-name>`;
+host home, SSH keys, cloud credentials, browser profiles, password stores, and Docker socket
+are not mounted. Agent and App credentials persist in container-side named volumes. Inside container, use `ghx` for GitHub CLI;
 never run `gh auth login` or `gh auth setup-git`.
