@@ -22,6 +22,10 @@
 #                                  from vault (--force required — clobbers a
 #                                  possibly live, already-refreshed token)
 #   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
+#   ./.devcontainer/dc self-update
+#                                  overwrite this per-project dc with the
+#                                  canonical copy baked into the image (backup
+#                                  kept as dc.bak). up/rebuild warn on drift.
 #   ./.devcontainer/dc sentinel-update
 #                                  pull + recreate usage-sentinel (data kept)
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
@@ -153,6 +157,19 @@ sync_codex_auth() {
   echo "Updated host Codex auth at $host_auth."
 }
 
+# Canonical `dc` lives here inside the image (see Dockerfile / init.sh). It is
+# the single source of truth every project's per-project `dc` is scaffolded
+# from, so a project copy that differs from it has drifted.
+DC_TEMPLATE_PATH="/opt/agent-devcontainer/templates/dc"
+
+# The image this project runs, parsed from devcontainer.json. Empty for a
+# `build`-based devcontainer.json (no "image" key) — e.g. this source repo,
+# whose own `dc` IS the canonical one.
+dc_image() {
+  sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$ROOT/.devcontainer/devcontainer.json" | head -1
+}
+
 # Re-pull the referenced image before creating the container. Without this,
 # a floating tag like :latest silently reuses whatever digest is in the
 # local Docker cache — `devcontainer up`, even with --build-no-cache, never
@@ -161,12 +178,65 @@ sync_codex_auth() {
 # devcontainer.json (no "image" key) and non-fatal offline.
 pull_image() {
   local image
-  image="$(sed -n 's/.*"image"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-    "$ROOT/.devcontainer/devcontainer.json" | head -1)"
+  image="$(dc_image)"
   if [ -n "$image" ]; then
     echo "Pulling $image ..."
     docker pull "$image" || echo "WARNING: pull failed — using local copy if present."
   fi
+}
+
+# Write the canonical `dc` (baked template from the image) to $1. Returns
+# nonzero — leaving $1 empty — when there's no image key or the image predates
+# the baked template. Image has no ENTRYPOINT, so the `cat` runs as given.
+extract_canonical_dc() {
+  local image
+  image="$(dc_image)"
+  [ -n "$image" ] || return 1
+  docker run --rm "$image" cat "$DC_TEMPLATE_PATH" >"$1" 2>/dev/null || return 1
+  [ -s "$1" ]
+}
+
+# Non-fatal drift check for up/rebuild: warn if the local per-project `dc`
+# differs from the canonical baked template. Silent no-op when the canonical
+# copy can't be read (offline, older image, build-based project) so it never
+# blocks the container coming up.
+warn_if_dc_drifted() {
+  local canonical
+  canonical="$(mktemp)"
+  if extract_canonical_dc "$canonical" && ! cmp -s "$canonical" "$ROOT/.devcontainer/dc"; then
+    echo "WARNING: .devcontainer/dc differs from the canonical copy baked into $(dc_image)." >&2
+    echo "         Run './.devcontainer/dc self-update' to sync it (a backup is kept as dc.bak)." >&2
+  fi
+  rm -f -- "$canonical"
+}
+
+# Replace the local per-project `dc` with the canonical baked template. Writes
+# to a temp file then `mv`s over `dc`, so this very script (still executing)
+# keeps its original open inode intact.
+self_update_dc() {
+  local dest="$ROOT/.devcontainer/dc" image canonical
+  image="$(dc_image)"
+  if [ -z "$image" ]; then
+    echo "ERROR: no \"image\" in devcontainer.json; nothing to self-update against." >&2
+    exit 1
+  fi
+  echo "Pulling $image ..."
+  docker pull "$image" || echo "WARNING: pull failed — using local image if present." >&2
+  canonical="$(mktemp)"
+  if ! extract_canonical_dc "$canonical"; then
+    rm -f -- "$canonical"
+    echo "ERROR: image $image has no baked dc template at $DC_TEMPLATE_PATH; update the image first." >&2
+    exit 1
+  fi
+  if cmp -s "$canonical" "$dest"; then
+    rm -f -- "$canonical"
+    echo "dc already matches the canonical template — nothing to do."
+    return
+  fi
+  cp -- "$dest" "$dest.bak"
+  chmod +x "$canonical"
+  mv -f -- "$canonical" "$dest"
+  echo "Updated .devcontainer/dc from $image (previous copy saved as dc.bak)."
 }
 
 SENTINEL_NAME="usage-sentinel"
@@ -319,12 +389,17 @@ case "$cmd" in
   up)
     ensure_sentinel
     pull_image
+    warn_if_dc_drifted
     devcontainer up --workspace-folder "$ROOT"
     ;;
   rebuild)
     ensure_sentinel
     pull_image
+    warn_if_dc_drifted
     devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    ;;
+  self-update)
+    self_update_dc
     ;;
   sentinel-update)
     ensure_sentinel_network
