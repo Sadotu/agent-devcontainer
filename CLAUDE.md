@@ -144,6 +144,20 @@ When running **inside the container** (workspace mounted at
   command atomically and silently stops claude/codex updating too.
   Confirmed by testing `npm install -g <real-pkg> <nonexistent-pkg>`
   together — nothing installs, exit 1.
+- worktree-warden (issue #63) autostarts one instance per repository via
+  `postStartCommand` (`start-worktree-warden.sh`), same npm+vendored-fallback
+  install pattern as issue-orchestrator. It runs foreground in a detached
+  tmux session named `worktree-warden` — **never invoke the bare
+  `worktree-warden` binary as a version/health probe**, same trap as
+  issue-orchestrator: any non-`status` argument either starts the daemon or
+  is rejected, neither is a version probe; read the version from `npm list -g`
+  instead. State (attention items, self-healing PID lock, bounded log) lives
+  under `<git-common-dir>/worktree-warden/` — `state.json` is the durable
+  record `worktree-warden-summary.sh` reads to print the concise
+  `Worktree Warden: PR #<n> / issue #<n> failed — <status>: <reason>` line
+  surfaced in every new interactive shell and in `start work`; it never
+  retries a failure automatically, so `status != "pending"` entries stay
+  until manually resolved per the package's own README.
 - Claude Connectors are account-level, riding along with whatever
   `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
   Forwarding the host token in means a host-enabled GitHub connector would
