@@ -30,6 +30,15 @@ if [ -z "${WORKSPACE:-}" ]; then
   WORKSPACE="/workspaces/${PROJECT_NAME:-}"
 fi
 
+# postStartCommand is a separate non-interactive process — it does NOT source
+# .bashrc, so the `PATH="$HOME/.npm-global/bin:$PATH"` export setup-agents.sh
+# appends there never reaches it. Without this, `command -v worktree-warden`
+# below would normally resolve the Dockerfile-baked root-owned fallback
+# instead of whatever `npm install -g @nickysagan/worktree-warden@latest`
+# actually installed — same shadowing setup-agents.sh does for itself
+# in-script, needed here for the same reason.
+export PATH="$HOME/.npm-global/bin:$PATH"
+
 # Resolve this script's own dir so its sourceable libs work both baked into
 # the image (/opt/agent-devcontainer) and from a repo checkout (tests) —
 # same _SETUP_DIR-style pattern setup-agents.sh uses.
@@ -69,6 +78,29 @@ if tmux has-session -t worktree-warden 2>/dev/null; then
 fi
 
 # --- 7. Start it, backgrounded in its own tmux session ------------------------
-tmux new-session -d -s worktree-warden -c "$WORKSPACE" -- worktree-warden
-echo "worktree-warden: started in tmux session 'worktree-warden'."
+# worktree-warden only ever appends its results to warden.log (fs.appendFile,
+# see its src/log.js) — it never writes to stdout/stderr, so the tmux pane
+# would show nothing at all on its own. Issue #63 requires failures to
+# "print immediately in the Warden tmux output", so the pane runs a small
+# wrapper that tails that same log file alongside the daemon: `worktree-warden`
+# itself stays the pane's foreground process (so the tmux session's lifetime
+# still tracks the daemon's, matching the dedup check above), with `tail -F`
+# backgrounded inside the same pane purely to mirror new log lines into it.
+git_common_dir="$(git -C "$WORKSPACE" rev-parse --git-common-dir 2>/dev/null)"
+case "$git_common_dir" in
+  /*) ;;
+  *) git_common_dir="$WORKSPACE/$git_common_dir" ;;
+esac
+warden_log="$git_common_dir/worktree-warden/warden.log"
+mkdir -p "$(dirname "$warden_log")"
+touch "$warden_log"
+
+if tmux new-session -d -s worktree-warden -c "$WORKSPACE" -- \
+    bash -c 'tail -n0 -F "$1" & tail_pid=$!; worktree-warden; kill "$tail_pid" 2>/dev/null' \
+    _ "$warden_log"; then
+  echo "worktree-warden: started in tmux session 'worktree-warden'."
+else
+  tmux_status=$?
+  echo "worktree-warden: failed to start tmux session (tmux exit $tmux_status) — worktree-warden is NOT running." >&2
+fi
 exit 0

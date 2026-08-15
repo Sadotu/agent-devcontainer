@@ -21,6 +21,7 @@ mkdir -p "$STUB_DIR"
 
 TMUX_LOG="$TMP/tmux.log"
 SESSION_FLAG="$TMP/session-exists"
+NEWSESSION_FAIL_FLAG="$TMP/newsession-should-fail"
 
 cat > "$STUB_DIR/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -31,6 +32,10 @@ if [[ "${1:-}" == has-session ]]; then
   else
     exit 1
   fi
+fi
+if [[ "${1:-}" == new-session ]] && [[ -f "$TMUX_NEWSESSION_FAIL_FLAG" ]]; then
+  echo "tmux: stub-simulated failure" >&2
+  exit 17
 fi
 exit 0
 EOF
@@ -45,6 +50,9 @@ chmod +x "$STUB_DIR/worktree-warden"
 STUB_PATH="$STUB_DIR:$PATH"
 WORKSPACE_DIR="$TMP/ws"
 mkdir -p "$WORKSPACE_DIR"
+# A real repo so the script's git-common-dir resolution (used to find
+# warden.log) exercises the actual code path rather than failing silently.
+git -C "$WORKSPACE_DIR" init -q
 
 setup_creds() {
   local home_dir=$1
@@ -64,6 +72,7 @@ run_script() {
   local marker=$1 home_dir=$2 path_value=$3
   set +e
   TMUX_TEST_LOG="$TMUX_LOG" TMUX_SESSION_FLAG="$SESSION_FLAG" \
+    TMUX_NEWSESSION_FAIL_FLAG="$NEWSESSION_FAIL_FLAG" \
     AGENT_SETUP_MARKER="$marker" HOME="$home_dir" WORKSPACE="$WORKSPACE_DIR" \
     PATH="$path_value" \
     bash "$SCRIPT" > "$TMP/out.log" 2>&1
@@ -127,6 +136,14 @@ run_script "$CASE4_MARKER" "$CASE4_HOME" "$STUB_PATH"
 new_session_line="$(grep '^new-session' "$TMUX_LOG")"
 grep -Fq -- '-s worktree-warden' <<<"$new_session_line" || fail "case 4: new-session args missing -s worktree-warden: $new_session_line"
 grep -Fq -- "-c $WORKSPACE_DIR" <<<"$new_session_line" || fail "case 4: new-session args missing -c $WORKSPACE_DIR: $new_session_line"
+# worktree-warden only ever writes to warden.log, never stdout/stderr (see
+# its src/log.js) -- the tmux pane must tail that file alongside the daemon
+# or issue #63's "print the failure immediately in the Warden tmux output"
+# requirement is unmet. Assert the wrapper actually does this instead of
+# just execing worktree-warden bare.
+grep -Fq -- 'tail -n0 -F' <<<"$new_session_line" || fail "case 4: new-session command does not tail warden.log: $new_session_line"
+grep -Fq -- 'worktree-warden' <<<"$new_session_line" || fail "case 4: new-session command does not run worktree-warden: $new_session_line"
+grep -Fq -- 'worktree-warden/warden.log' <<<"$new_session_line" || fail "case 4: new-session command does not reference the state dir's warden.log: $new_session_line"
 
 # =========================================================================
 # Case 5: same as case 4 but a session already exists -> zero new-session
@@ -143,5 +160,57 @@ run_script "$CASE5_MARKER" "$CASE5_HOME" "$STUB_PATH"
 [[ $STATUS -eq 0 ]] || fail "case 5: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 0 ]] || fail "case 5: expected zero new-session calls (session already exists)"
 rm -f "$SESSION_FLAG"
+
+# =========================================================================
+# Case 6: worktree-warden is installed ONLY under $HOME/.npm-global/bin
+# (not on the generic stub PATH) -- proves the script prepends that dir
+# itself rather than relying on postStartCommand's non-interactive process
+# to have sourced .bashrc (it never does).
+# =========================================================================
+rm -f "$TMUX_LOG" "$SESSION_FLAG"
+CASE6_MARKER="$TMP/case6/marker"
+mkdir -p "$(dirname "$CASE6_MARKER")"
+printf 'agent-setup-complete\n' > "$CASE6_MARKER"
+CASE6_HOME="$TMP/case6-home"
+setup_creds "$CASE6_HOME"
+mkdir -p "$CASE6_HOME/.npm-global/bin"
+cat > "$CASE6_HOME/.npm-global/bin/worktree-warden" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$CASE6_HOME/.npm-global/bin/worktree-warden"
+# STUB_PATH still carries STUB_DIR's own worktree-warden stub (needed
+# alongside the tmux/git stubs) -- what actually proves the fix is that the
+# script's internal `export PATH="$HOME/.npm-global/bin:$PATH"` runs BEFORE
+# the `command -v worktree-warden` check, so resolution order alone can't
+# tell this case apart from case 4. What case 4 doesn't cover is that the
+# prepend uses this test's CASE6_HOME, not the real container's $HOME -- run
+# it with a $HOME that has no other worktree-warden anywhere but
+# .npm-global/bin to confirm the prepend is what's doing the finding.
+STUB_PATH_NO_WW="$TMP/stubs-no-ww:$PATH"
+mkdir -p "$TMP/stubs-no-ww"
+cp "$STUB_DIR/tmux" "$TMP/stubs-no-ww/tmux"
+run_script "$CASE6_MARKER" "$CASE6_HOME" "$STUB_PATH_NO_WW"
+[[ $STATUS -eq 0 ]] || fail "case 6: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
+[[ "$(new_session_count)" -eq 1 ]] || fail "case 6: expected exactly one new-session call (worktree-warden should resolve via \$HOME/.npm-global/bin), got $(new_session_count). Output: $(cat "$TMP/out.log")"
+
+# =========================================================================
+# Case 7: tmux new-session itself fails (e.g. tmux server unreachable).
+# Must still exit 0 (never block postStartCommand / container entry) but
+# must NOT claim success, and must say something is wrong.
+# =========================================================================
+rm -f "$TMUX_LOG" "$SESSION_FLAG"
+touch "$NEWSESSION_FAIL_FLAG"
+CASE7_MARKER="$TMP/case7/marker"
+mkdir -p "$(dirname "$CASE7_MARKER")"
+printf 'agent-setup-complete\n' > "$CASE7_MARKER"
+CASE7_HOME="$TMP/case7-home"
+setup_creds "$CASE7_HOME"
+run_script "$CASE7_MARKER" "$CASE7_HOME" "$STUB_PATH"
+[[ $STATUS -eq 0 ]] || fail "case 7: script exited $STATUS, expected 0 (must never block postStartCommand). Output: $(cat "$TMP/out.log")"
+out="$(cat "$TMP/out.log")"
+[[ "$out" != *"started in tmux session"* ]] || fail "case 7: falsely claimed success despite tmux new-session failing: $out"
+[[ "$out" == *"failed to start"* ]] || fail "case 7: expected a failure message when tmux new-session fails, got: $out"
+rm -f "$NEWSESSION_FAIL_FLAG"
 
 echo "PASS: start-worktree-warden.test.sh"
