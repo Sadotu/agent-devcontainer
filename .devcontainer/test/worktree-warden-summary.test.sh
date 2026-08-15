@@ -152,4 +152,20 @@ $out
 $expected"
 [[ "$out" != *null* ]] || fail "case8: literal 'null' leaked into output: $out"
 
+# --- case 9: "waiting" status (issue #63 names four simulated result kinds
+# explicitly: invocation failure, waiting, retry, blocked — cases 4/5/6/8
+# already cover blocked/daemon-error/retry; this closes the "waiting" gap) ---
+write_state "$REPO" '{
+  "agent/7-baz": {"branch":"agent/7-baz","pr":77,"issue":7,"status":"waiting","reason":"ambiguous-pr-issue","diagnostic":null,"updatedAt":"2026-08-15T00:00:00.000Z"}
+}'
+out="$(run_summary "$REPO")"
+status=$?
+[[ $status -eq 0 ]] || fail "case9: expected exit 0, got $status"
+expected="Worktree Warden: PR #77 / issue #7 failed — waiting: ambiguous-pr-issue
+MARKER_OK"
+[[ "$out" == "$expected" ]] || fail "case9: unexpected output:
+$out
+--- expected ---
+$expected"
+
 echo "PASS: worktree-warden-summary"
