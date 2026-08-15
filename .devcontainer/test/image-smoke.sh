@@ -59,6 +59,52 @@ source_test() {
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
+    # Same derive-from-Dockerfile-then-verify treatment for the vendored
+    # worktree-warden package (issue #63). Scoped to that package's own
+    # comment block (anchored on its unique "Sadotu/worktree-warden" mention)
+    # so the shared "# commit .../# SHA-256 ..." comment style doesn't pick up
+    # issue-orchestrator's values instead.
+    local ww_block ww_short_commit ww_full_commit ww_pkg_version ww_expected_sha
+    local ww_artifact ww_artifact_sha ww_archive_listing ww_package_json
+    ww_block="$(grep -A10 -F 'Sadotu/worktree-warden' "$devcontainer_dir/Dockerfile")"
+    ww_short_commit="$(grep -oP '(?<=COPY vendor/worktree-warden-)[0-9a-f]+(?=\.tgz)' "$devcontainer_dir/Dockerfile" | head -1)"
+    [[ -n $ww_short_commit ]]
+    ww_full_commit="$(grep -oP '(?<=# commit )[0-9a-f]+' <<<"$ww_block" | head -1)"
+    ww_pkg_version="$(grep -oP '(?<=package version )[0-9.]+(?=\)\.)' <<<"$ww_block" | head -1)"
+    ww_expected_sha="$(grep -oP '(?<=SHA-256 )[0-9a-f]+' <<<"$ww_block" | head -1)"
+    [[ $ww_full_commit == "$ww_short_commit"* ]]
+
+    ww_artifact="$devcontainer_dir/vendor/worktree-warden-$ww_short_commit.tgz"
+
+    [[ -f $ww_artifact ]]
+    ww_artifact_sha="$(sha256sum "$ww_artifact")"
+    [[ ${ww_artifact_sha%% *} == "$ww_expected_sha" ]]
+    ww_archive_listing="$(tar -tzf "$ww_artifact")"
+    grep -Fxq 'package/package.json' <<<"$ww_archive_listing"
+    grep -Fxq 'package/bin/worktree-warden.js' <<<"$ww_archive_listing"
+    ww_package_json="$(tar -xOzf "$ww_artifact" package/package.json)"
+    [[ "$(jq -r '.version' <<<"$ww_package_json")" == "$ww_pkg_version" ]]
+    [[ "$(jq -r '.bin["worktree-warden"]' <<<"$ww_package_json")" == bin/worktree-warden.js ]]
+    ! grep -Fq 'worktree-warden/archive/' "$devcontainer_dir/Dockerfile"
+    grep -Fq "commit $ww_full_commit (package version $ww_pkg_version)." "$devcontainer_dir/Dockerfile"
+    grep -Fq "SHA-256 $ww_expected_sha." "$devcontainer_dir/Dockerfile"
+    grep -Fq "COPY vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
+    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
+
+    # worktree-warden vendor path must be part of the shared npm install -g
+    # block (same cache-clean layer as claude-code/codex/issue-orchestrator).
+    local ww_npm_install_block
+    ww_npm_install_block="$(sed -n '/^RUN npm install -g \\$/,/npm cache clean --force$/p' "$devcontainer_dir/Dockerfile")"
+    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" <<<"$ww_npm_install_block"
+
+    # start-worktree-warden.sh / worktree-warden-summary.sh: baked onto the
+    # image by another task running in parallel — only their Dockerfile
+    # wiring is this task's concern, not their content.
+    grep -Fq 'start-worktree-warden.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'worktree-warden-summary.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/start-worktree-warden.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/Dockerfile"
+
     # Image version identifier (issue #24). The build bakes a VERSION file and
     # a PATH command from build-args the publish workflow supplies; setup
     # reports it.

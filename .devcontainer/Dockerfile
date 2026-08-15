@@ -52,6 +52,16 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # longer gates day-to-day issue-orchestrator freshness.
 COPY vendor/issue-orchestrator-6349c8392975.tgz /opt/agent-devcontainer/vendor/
 
+# Worktree Warden package produced with `npm pack` from Sadotu/worktree-warden
+# commit cfc33558708f4f341d11593fdeb42d7ea3ce701b (package version 0.1.0).
+# SHA-256 58cf888751738abd62062f35cdc5abea6832b9839fde5e5eb9719d73eba0089b.
+# Baked-in fallback only, same role as issue-orchestrator above —
+# start-worktree-warden.sh shadows this at runtime with
+# @nickysagan/worktree-warden@latest from npmjs, which needs no credential.
+# Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
+# longer gates day-to-day worktree-warden freshness.
+COPY vendor/worktree-warden-cfc33558708f.tgz /opt/agent-devcontainer/vendor/
+
 # Agent CLIs — Claude Code, OpenAI Codex.
 # Installed at build time (as root) as the baked-in fallback version.
 # setup-agents.sh updates both at runtime into a separate vscode-owned npm
@@ -63,6 +73,7 @@ RUN npm install -g \
         @openai/codex \
         @bitwarden/cli \
         /opt/agent-devcontainer/vendor/issue-orchestrator-6349c8392975.tgz \
+        /opt/agent-devcontainer/vendor/worktree-warden-cfc33558708f.tgz \
     && npm cache clean --force
 
 # Explicit user command for issue orchestration. Defining this in Bash startup
@@ -90,6 +101,7 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
         codex-auth-sync.sh dotagents-install.sh \
+        start-worktree-warden.sh worktree-warden-summary.sh \
         /opt/agent-devcontainer/
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
 # codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
@@ -105,6 +117,8 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/codex-auth-sync.sh \
         /opt/agent-devcontainer/dotagents-install.sh \
+        /opt/agent-devcontainer/start-worktree-warden.sh \
+        /opt/agent-devcontainer/worktree-warden-summary.sh \
         /opt/agent-devcontainer/githooks/pre-push
 
 # Project scaffolder + the two per-project files it emits.
