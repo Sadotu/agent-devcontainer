@@ -171,6 +171,26 @@ EOF
     [[ ${invocation[0]} == "$PWD" ]]
     [[ ${invocation[1]} == argc=0 ]]
     [[ ${#invocation[@]} -eq 2 ]]
+
+    # worktree-warden summary sourcing is guarded by `[[ -r
+    # /opt/agent-devcontainer/worktree-warden-summary.sh ]]`, an absolute
+    # baked-image path that doesn't exist in this source-only checkout — so
+    # the guard is false here and the above exact-invocation assertions
+    # (argv/PWD/exit-code passthrough) are the regression proof that adding
+    # the sourcing line didn't change `start work`'s behavior when the file
+    # is absent. Actual summary-line content is covered by
+    # worktree-warden-summary.test.sh; the guard's wiring itself is asserted
+    # statically here (real baked-image behavior needs image_test).
+    grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/start-work.sh"
+    grep -Fq 'worktree_warden_summary' "$devcontainer_dir/start-work.sh"
+
+    # setup-agents.sh: worktree-warden update block mirrors issue-orchestrator's
+    # (issue #63) — never probes with a bare/`--version` invocation (every
+    # non-`status` argument starts the daemon or is rejected, neither is a
+    # version probe), reads the version from `npm list -g` instead.
+    grep -Fq 'npm install -g @nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
+    grep -Fq 'npm list -g @nickysagan/worktree-warden' "$devcontainer_dir/setup-agents.sh"
+    ! grep -Eq '\bworktree-warden[[:space:]]+--version\b' "$devcontainer_dir/setup-agents.sh"
 }
 
 image_test() {
@@ -184,9 +204,24 @@ image_test() {
         command -v gh >/dev/null &&
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
+        command -v worktree-warden >/dev/null &&
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
+    docker run --rm "$image" bash -c 'node --check "$(command -v worktree-warden)"'
+
+    # worktree-warden (issue #63): inert presence checks only — a plain
+    # `docker run` never executes `postStartCommand` (devcontainer-CLI-only
+    # lifecycle hook), so it can neither start nor be proven not-started here.
+    # Real autostart dedup/gating is covered by start-worktree-warden.test.sh.
+    docker run --rm "$image" bash -c '
+        test -x /opt/agent-devcontainer/start-worktree-warden.sh &&
+        test -x /opt/agent-devcontainer/worktree-warden-summary.sh
+    '
+    # `worktree-warden status` must run cleanly with no state dir present
+    # (fresh container, no prior candidates) — no GitHub App token, no
+    # network, no daemon start.
+    [[ "$(docker run --rm "$image" bash -c 'worktree-warden status')" == *'worktree-warden status'* ]]
 
     # Version identifier is baked and inspectable from inside the container (issue #24).
     docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
@@ -220,12 +255,19 @@ image_test() {
 const config = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"));
 if (!config.runArgs.includes("--network=agent-services")) process.exit(1);
 if (config.containerEnv.SENTINEL_URL !== "http://usage-sentinel:4317") process.exit(1);
+if (config.postStartCommand !== "/opt/agent-devcontainer/start-worktree-warden.sh") process.exit(1);
 EOF
 
     container_id="$(docker run -d "$image" sleep 30)"
     sleep 1
     [[ "$(docker inspect -f '{{.State.Running}}' "$container_id")" == true ]]
     [[ -z "$(docker exec "$container_id" pgrep -f '[i]ssue-orchestrator' || true)" ]]
+    # postStartCommand is a devcontainer-CLI-only lifecycle hook, never
+    # executed by a plain `docker run` (see the comment above the earlier
+    # worktree-warden presence checks) — so warden must NOT be running here
+    # either, same as issue-orchestrator above; this is a true negative this
+    # test CAN prove (nothing invoked postStartCommand at all in this path).
+    [[ -z "$(docker exec "$container_id" pgrep -f '[w]orktree-warden' || true)" ]]
 }
 
 [[ $# -eq 1 ]] || usage
