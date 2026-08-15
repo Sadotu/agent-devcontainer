@@ -22,7 +22,16 @@ mkdir -p "$STUB_DIR"
 TMUX_LOG="$TMP/tmux.log"
 SESSION_FLAG="$TMP/session-exists"
 NEWSESSION_FAIL_FLAG="$TMP/newsession-should-fail"
+NEWSESSION_CRASH_FLAG="$TMP/newsession-should-crash"
 
+# has-session's result is driven by SESSION_FLAG, which new-session itself
+# now sets on a normal "success" — models real tmux, where `new-session -d`
+# returning 0 only means the session was created, not that its command
+# stayed alive. NEWSESSION_CRASH_FLAG simulates the pane's command dying
+# immediately (new-session still returns 0, but SESSION_FLAG is never set,
+# so the script's post-launch has-session recheck correctly sees it gone) —
+# distinct from NEWSESSION_FAIL_FLAG, which simulates new-session itself
+# failing to create a session at all.
 cat > "$STUB_DIR/tmux" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMUX_TEST_LOG"
@@ -33,9 +42,16 @@ if [[ "${1:-}" == has-session ]]; then
     exit 1
   fi
 fi
-if [[ "${1:-}" == new-session ]] && [[ -f "$TMUX_NEWSESSION_FAIL_FLAG" ]]; then
-  echo "tmux: stub-simulated failure" >&2
-  exit 17
+if [[ "${1:-}" == new-session ]]; then
+  if [[ -f "$TMUX_NEWSESSION_FAIL_FLAG" ]]; then
+    echo "tmux: stub-simulated failure" >&2
+    exit 17
+  fi
+  if [[ -f "$TMUX_NEWSESSION_CRASH_FLAG" ]]; then
+    exit 0
+  fi
+  touch "$TMUX_SESSION_FLAG"
+  exit 0
 fi
 exit 0
 EOF
@@ -73,6 +89,7 @@ run_script() {
   set +e
   TMUX_TEST_LOG="$TMUX_LOG" TMUX_SESSION_FLAG="$SESSION_FLAG" \
     TMUX_NEWSESSION_FAIL_FLAG="$NEWSESSION_FAIL_FLAG" \
+    TMUX_NEWSESSION_CRASH_FLAG="$NEWSESSION_CRASH_FLAG" \
     AGENT_SETUP_MARKER="$marker" HOME="$home_dir" WORKSPACE="$WORKSPACE_DIR" \
     PATH="$path_value" \
     bash "$SCRIPT" > "$TMP/out.log" 2>&1
@@ -144,6 +161,10 @@ grep -Fq -- "-c $WORKSPACE_DIR" <<<"$new_session_line" || fail "case 4: new-sess
 grep -Fq -- 'tail -n0 -F' <<<"$new_session_line" || fail "case 4: new-session command does not tail warden.log: $new_session_line"
 grep -Fq -- 'worktree-warden' <<<"$new_session_line" || fail "case 4: new-session command does not run worktree-warden: $new_session_line"
 grep -Fq -- 'worktree-warden/warden.log' <<<"$new_session_line" || fail "case 4: new-session command does not reference the state dir's warden.log: $new_session_line"
+# Confirm the happy path still lands on the "started" branch, not the
+# post-launch crash-recheck branch (the stub's new-session touches
+# SESSION_FLAG on a normal success, which the recheck must see).
+grep -Fq -- "started in tmux session" "$TMP/out.log" || fail "case 4: expected a success message, got: $(cat "$TMP/out.log")"
 
 # =========================================================================
 # Case 5: same as case 4 but a session already exists -> zero new-session
@@ -193,6 +214,7 @@ cp "$STUB_DIR/tmux" "$TMP/stubs-no-ww/tmux"
 run_script "$CASE6_MARKER" "$CASE6_HOME" "$STUB_PATH_NO_WW"
 [[ $STATUS -eq 0 ]] || fail "case 6: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 1 ]] || fail "case 6: expected exactly one new-session call (worktree-warden should resolve via \$HOME/.npm-global/bin), got $(new_session_count). Output: $(cat "$TMP/out.log")"
+grep -Fq -- "started in tmux session" "$TMP/out.log" || fail "case 6: expected a success message, got: $(cat "$TMP/out.log")"
 
 # =========================================================================
 # Case 7: tmux new-session itself fails (e.g. tmux server unreachable).
@@ -212,5 +234,29 @@ out="$(cat "$TMP/out.log")"
 [[ "$out" != *"started in tmux session"* ]] || fail "case 7: falsely claimed success despite tmux new-session failing: $out"
 [[ "$out" == *"failed to start"* ]] || fail "case 7: expected a failure message when tmux new-session fails, got: $out"
 rm -f "$NEWSESSION_FAIL_FLAG"
+
+# =========================================================================
+# Case 8: `tmux new-session` itself succeeds, but the pane's command (the
+# worktree-warden wrapper) dies immediately -- new-session returning 0 only
+# proves the session was created, not that it survived. Must NOT claim
+# "started", must say something crashed, and the exit-code-passthrough fix
+# (`exit "$status"` at the end of the wrapper instead of ending on `kill`)
+# is what makes this distinguishable from a clean run in the first place.
+# =========================================================================
+rm -f "$TMUX_LOG" "$SESSION_FLAG"
+touch "$NEWSESSION_CRASH_FLAG"
+CASE8_MARKER="$TMP/case8/marker"
+mkdir -p "$(dirname "$CASE8_MARKER")"
+printf 'agent-setup-complete\n' > "$CASE8_MARKER"
+CASE8_HOME="$TMP/case8-home"
+setup_creds "$CASE8_HOME"
+run_script "$CASE8_MARKER" "$CASE8_HOME" "$STUB_PATH"
+[[ $STATUS -eq 0 ]] || fail "case 8: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
+[[ "$(new_session_count)" -eq 1 ]] || fail "case 8: expected exactly one new-session attempt, got $(new_session_count)"
+out="$(cat "$TMP/out.log")"
+[[ "$out" != *"started in tmux session"* ]] || fail "case 8: falsely claimed success despite the session dying immediately: $out"
+[[ "$out" == *"crashed on startup"* ]] || fail "case 8: expected a crash message when the session dies immediately after new-session succeeds, got: $out"
+[[ "$out" != *"failed to start tmux session"* ]] || fail "case 8: wrong branch -- this is new-session succeeding then the pane dying, not new-session itself failing: $out"
+rm -f "$NEWSESSION_CRASH_FLAG"
 
 echo "PASS: start-worktree-warden.test.sh"

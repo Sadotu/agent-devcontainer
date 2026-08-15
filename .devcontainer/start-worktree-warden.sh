@@ -96,9 +96,21 @@ mkdir -p "$(dirname "$warden_log")"
 touch "$warden_log"
 
 if tmux new-session -d -s worktree-warden -c "$WORKSPACE" -- \
-    bash -c 'tail -n0 -F "$1" & tail_pid=$!; worktree-warden; kill "$tail_pid" 2>/dev/null' \
+    bash -c 'tail -n0 -F "$1" & tail_pid=$!; worktree-warden; status=$?; kill "$tail_pid" 2>/dev/null; exit "$status"' \
     _ "$warden_log"; then
-  echo "worktree-warden: started in tmux session 'worktree-warden'."
+  # `tmux new-session -d` only proves the session was created, not that the
+  # pane's command survived past its own startup — a worktree-warden crash
+  # immediately after launch (e.g. before it ever writes to warden.log or
+  # state.json) tears the session down again just as fast, and without this
+  # recheck that already-dead session would still be reported as "started".
+  # Not a full health check (still racy for a crash slightly past this grace
+  # window), just closing the "reported success while already dead" gap.
+  sleep 1
+  if tmux has-session -t worktree-warden 2>/dev/null; then
+    echo "worktree-warden: started in tmux session 'worktree-warden'."
+  else
+    echo "worktree-warden: tmux session exited immediately after starting — worktree-warden crashed on startup. Check the container's postStartCommand output and $warden_log." >&2
+  fi
 else
   tmux_status=$?
   echo "worktree-warden: failed to start tmux session (tmux exit $tmux_status) — worktree-warden is NOT running." >&2
