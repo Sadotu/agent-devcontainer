@@ -5,7 +5,7 @@ version = 1
 source = "Sadotu/agent-skills"
 resolved_url = "https://github.com/Sadotu/agent-skills"
 resolved_path = "skills/github-issue"
-resolved_commit = "1593e68460bbe4849db1f00e26ee7d1ee8a8f794"
+resolved_commit = "5068d0e835e4a8b09d6dcb2604293298d6d3c238"
 
 [skills.review-pr]
 source = "Sadotu/agent-skills"
