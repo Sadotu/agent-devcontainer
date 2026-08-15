@@ -56,4 +56,4 @@ Common commands:
 Security boundary: only project repository is bind-mounted at `/workspaces/<project-name>`;
 host home, SSH keys, cloud credentials, browser profiles, password stores, and Docker socket
 are not mounted. Agent and App credentials persist in container-side named volumes. Inside container, use `ghx` for GitHub CLI;
-never run `gh auth login` or `gh auth setup-git`.
+never run `gh auth login` or `gh auth setup-git`. Worktree Warden autostarts one watcher per repository; an unresolved cleanup failure shows up in new shells, `start work`, and `worktree-warden status`.

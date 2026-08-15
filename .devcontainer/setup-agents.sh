@@ -90,6 +90,22 @@ if ! grep -q "# --- agent-devcontainer claude oauth env ---" "$BASHRC"; then
 EOF
 fi
 
+# Surface any unresolved worktree-warden attention item on every interactive
+# shell (issue #63) — reads <git-common-dir>/worktree-warden/state.json
+# directly, so repeated shells reflect the SAME persistent record rather than
+# accumulating duplicate alerts. Silent (no output, no error) when not in a
+# git repo or no attention items exist.
+if ! grep -q "# --- agent-devcontainer worktree-warden summary ---" "$BASHRC"; then
+  cat >> "$BASHRC" <<'EOF'
+
+# --- agent-devcontainer worktree-warden summary ---
+if [ -r /opt/agent-devcontainer/worktree-warden-summary.sh ]; then
+  . /opt/agent-devcontainer/worktree-warden-summary.sh
+  worktree_warden_summary
+fi
+EOF
+fi
+
 echo "==> Shared skills location"
 mkdir -p "$WORKSPACE/.agents/skills"
 
@@ -384,6 +400,21 @@ if npm install -g @nickysagan/issue-orchestrator@latest \
 else
   echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
   echo "         See /tmp/issue-orchestrator-update.log for details."
+fi
+
+# worktree-warden: same npmjs-only, no-credential-needed rationale and same
+# atomic-failure-isolation reason for its own `npm install -g` call as
+# issue-orchestrator above.
+if npm install -g @nickysagan/worktree-warden@latest \
+    >/tmp/worktree-warden-update.log 2>&1; then
+  # Never probe with a bare `worktree-warden` (starts the watcher daemon) or
+  # any flag (every non-`status` argument is rejected as "unknown command"
+  # only after the daemon path is already skipped — still not a version
+  # probe). Read npm's record instead.
+  echo "    worktree-warden: $(npm list -g @nickysagan/worktree-warden --depth=0 2>/dev/null | sed -n 's/.*worktree-warden@//p' || echo unknown)"
+else
+  echo "WARNING: worktree-warden update failed — keeping baked-in vendored version."
+  echo "         See /tmp/worktree-warden-update.log for details."
 fi
 
 echo "==> Claude Code plugins/skills"

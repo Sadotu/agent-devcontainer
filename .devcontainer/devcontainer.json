@@ -28,6 +28,7 @@
     "APP_ID": "4217970"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh",
   "customizations": {
     "vscode": {
       "extensions": [

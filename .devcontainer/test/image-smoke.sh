@@ -59,6 +59,52 @@ source_test() {
     grep -Fq "/opt/agent-devcontainer/vendor/issue-orchestrator-$short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Eq '^[[:space:]]+tmux \\' "$devcontainer_dir/Dockerfile"
 
+    # Same derive-from-Dockerfile-then-verify treatment for the vendored
+    # worktree-warden package (issue #63). Scoped to that package's own
+    # comment block (anchored on its unique "Sadotu/worktree-warden" mention)
+    # so the shared "# commit .../# SHA-256 ..." comment style doesn't pick up
+    # issue-orchestrator's values instead.
+    local ww_block ww_short_commit ww_full_commit ww_pkg_version ww_expected_sha
+    local ww_artifact ww_artifact_sha ww_archive_listing ww_package_json
+    ww_block="$(grep -A10 -F 'Sadotu/worktree-warden' "$devcontainer_dir/Dockerfile")"
+    ww_short_commit="$(grep -oP '(?<=COPY vendor/worktree-warden-)[0-9a-f]+(?=\.tgz)' "$devcontainer_dir/Dockerfile" | head -1)"
+    [[ -n $ww_short_commit ]]
+    ww_full_commit="$(grep -oP '(?<=# commit )[0-9a-f]+' <<<"$ww_block" | head -1)"
+    ww_pkg_version="$(grep -oP '(?<=package version )[0-9.]+(?=\)\.)' <<<"$ww_block" | head -1)"
+    ww_expected_sha="$(grep -oP '(?<=SHA-256 )[0-9a-f]+' <<<"$ww_block" | head -1)"
+    [[ $ww_full_commit == "$ww_short_commit"* ]]
+
+    ww_artifact="$devcontainer_dir/vendor/worktree-warden-$ww_short_commit.tgz"
+
+    [[ -f $ww_artifact ]]
+    ww_artifact_sha="$(sha256sum "$ww_artifact")"
+    [[ ${ww_artifact_sha%% *} == "$ww_expected_sha" ]]
+    ww_archive_listing="$(tar -tzf "$ww_artifact")"
+    grep -Fxq 'package/package.json' <<<"$ww_archive_listing"
+    grep -Fxq 'package/bin/worktree-warden.js' <<<"$ww_archive_listing"
+    ww_package_json="$(tar -xOzf "$ww_artifact" package/package.json)"
+    [[ "$(jq -r '.version' <<<"$ww_package_json")" == "$ww_pkg_version" ]]
+    [[ "$(jq -r '.bin["worktree-warden"]' <<<"$ww_package_json")" == bin/worktree-warden.js ]]
+    ! grep -Fq 'worktree-warden/archive/' "$devcontainer_dir/Dockerfile"
+    grep -Fq "commit $ww_full_commit (package version $ww_pkg_version)." "$devcontainer_dir/Dockerfile"
+    grep -Fq "SHA-256 $ww_expected_sha." "$devcontainer_dir/Dockerfile"
+    grep -Fq "COPY vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
+    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
+
+    # worktree-warden vendor path must be part of the shared npm install -g
+    # block (same cache-clean layer as claude-code/codex/issue-orchestrator).
+    local ww_npm_install_block
+    ww_npm_install_block="$(sed -n '/^RUN npm install -g \\$/,/npm cache clean --force$/p' "$devcontainer_dir/Dockerfile")"
+    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" <<<"$ww_npm_install_block"
+
+    # start-worktree-warden.sh / worktree-warden-summary.sh: baked onto the
+    # image by another task running in parallel — only their Dockerfile
+    # wiring is this task's concern, not their content.
+    grep -Fq 'start-worktree-warden.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'worktree-warden-summary.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/start-worktree-warden.sh' "$devcontainer_dir/Dockerfile"
+    grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/Dockerfile"
+
     # Image version identifier (issue #24). The build bakes a VERSION file and
     # a PATH command from build-args the publish workflow supplies; setup
     # reports it.
@@ -125,6 +171,26 @@ EOF
     [[ ${invocation[0]} == "$PWD" ]]
     [[ ${invocation[1]} == argc=0 ]]
     [[ ${#invocation[@]} -eq 2 ]]
+
+    # worktree-warden summary sourcing is guarded by `[[ -r
+    # /opt/agent-devcontainer/worktree-warden-summary.sh ]]`, an absolute
+    # baked-image path that doesn't exist in this source-only checkout — so
+    # the guard is false here and the above exact-invocation assertions
+    # (argv/PWD/exit-code passthrough) are the regression proof that adding
+    # the sourcing line didn't change `start work`'s behavior when the file
+    # is absent. Actual summary-line content is covered by
+    # worktree-warden-summary.test.sh; the guard's wiring itself is asserted
+    # statically here (real baked-image behavior needs image_test).
+    grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/start-work.sh"
+    grep -Fq 'worktree_warden_summary' "$devcontainer_dir/start-work.sh"
+
+    # setup-agents.sh: worktree-warden update block mirrors issue-orchestrator's
+    # (issue #63) — never probes with a bare/`--version` invocation (every
+    # non-`status` argument starts the daemon or is rejected, neither is a
+    # version probe), reads the version from `npm list -g` instead.
+    grep -Fq 'npm install -g @nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
+    grep -Fq 'npm list -g @nickysagan/worktree-warden' "$devcontainer_dir/setup-agents.sh"
+    ! grep -Eq '\bworktree-warden[[:space:]]+--version\b' "$devcontainer_dir/setup-agents.sh"
 }
 
 image_test() {
@@ -138,9 +204,24 @@ image_test() {
         command -v gh >/dev/null &&
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
+        command -v worktree-warden >/dev/null &&
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
+    docker run --rm "$image" bash -c 'node --check "$(command -v worktree-warden)"'
+
+    # worktree-warden (issue #63): inert presence checks only — a plain
+    # `docker run` never executes `postStartCommand` (devcontainer-CLI-only
+    # lifecycle hook), so it can neither start nor be proven not-started here.
+    # Real autostart dedup/gating is covered by start-worktree-warden.test.sh.
+    docker run --rm "$image" bash -c '
+        test -x /opt/agent-devcontainer/start-worktree-warden.sh &&
+        test -x /opt/agent-devcontainer/worktree-warden-summary.sh
+    '
+    # `worktree-warden status` must run cleanly with no state dir present
+    # (fresh container, no prior candidates) — no GitHub App token, no
+    # network, no daemon start.
+    [[ "$(docker run --rm "$image" bash -c 'worktree-warden status')" == *'worktree-warden status'* ]]
 
     # Version identifier is baked and inspectable from inside the container (issue #24).
     docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
@@ -174,12 +255,19 @@ image_test() {
 const config = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"));
 if (!config.runArgs.includes("--network=agent-services")) process.exit(1);
 if (config.containerEnv.SENTINEL_URL !== "http://usage-sentinel:4317") process.exit(1);
+if (config.postStartCommand !== "/opt/agent-devcontainer/start-worktree-warden.sh") process.exit(1);
 EOF
 
     container_id="$(docker run -d "$image" sleep 30)"
     sleep 1
     [[ "$(docker inspect -f '{{.State.Running}}' "$container_id")" == true ]]
     [[ -z "$(docker exec "$container_id" pgrep -f '[i]ssue-orchestrator' || true)" ]]
+    # postStartCommand is a devcontainer-CLI-only lifecycle hook, never
+    # executed by a plain `docker run` (see the comment above the earlier
+    # worktree-warden presence checks) — so warden must NOT be running here
+    # either, same as issue-orchestrator above; this is a true negative this
+    # test CAN prove (nothing invoked postStartCommand at all in this path).
+    [[ -z "$(docker exec "$container_id" pgrep -f '[w]orktree-warden' || true)" ]]
 }
 
 [[ $# -eq 1 ]] || usage

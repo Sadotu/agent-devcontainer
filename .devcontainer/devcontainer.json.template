@@ -21,6 +21,7 @@
     "APP_ID": "__APP_ID__"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh",
   "customizations": {
     "vscode": { "extensions": ["anthropic.claude-code", "dbaeumer.vscode-eslint"] }
   }
