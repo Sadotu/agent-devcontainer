@@ -376,6 +376,11 @@ ensure_sentinel() {
     echo "ERROR: existing usage-sentinel container is incompatible; inspect and remove it manually before recreating it with the fixed named volumes." >&2
     return 1
   fi
+  docker pull "$SENTINEL_IMAGE"
+  if [ "$(sentinel_inspect '{{.Image}}')" != "$(docker image inspect --format '{{.Id}}' "$SENTINEL_IMAGE")" ]; then
+    recreate_sentinel
+    return
+  fi
   status="$(sentinel_inspect '{{.State.Status}}')"
   health="$(sentinel_inspect '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
   if [ "$status" = running ]; then

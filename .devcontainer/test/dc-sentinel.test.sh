@@ -85,6 +85,13 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "network create") [ "$FAKE_SCENARIO" != network_race ] ;;
+  "image inspect")
+    if [ "$FAKE_SCENARIO" = stale_digest ]; then
+      echo "sha256:pulled-fresh"
+    else
+      echo "$FAKE_PULLED_IMAGE_ID"
+    fi
+    ;;
   "container inspect")
     if [[ "$FAKE_SCENARIO" = missing || "$FAKE_SCENARIO" = container_race || "$FAKE_SCENARIO" = container_race_starting ]] &&
       ! grep -Fq 'docker run -d --name usage-sentinel' "$FAKE_DOCKER_LOG"; then
@@ -92,6 +99,7 @@ case "${1:-} ${2:-}" in
     fi
     format="${5:-}"
     case "$format" in
+      '{{.Image}}') echo "$FAKE_CONTAINER_IMAGE_ID" ;;
       *State.Status*) [[ "$FAKE_SCENARIO" = stopped || "$FAKE_SCENARIO" = starting_stopped ]] && echo exited || echo running ;;
       *State.Health.Status*)
         if [ "$FAKE_SCENARIO" = unhealthy ]; then
@@ -173,6 +181,10 @@ export DC_DOCKER_SOCK="$TMP/docker.sock"
 FAKE_SOCK_GID="$(stat -c '%g' "$DC_DOCKER_SOCK")"
 export FAKE_SOCK_GID
 
+FAKE_CONTAINER_IMAGE_ID="sha256:current"
+FAKE_PULLED_IMAGE_ID="sha256:current"
+export FAKE_CONTAINER_IMAGE_ID FAKE_PULLED_IMAGE_ID
+
 run_dc() {
   FAKE_SCENARIO="$1" LOG="$TMP/$1-$2.log" FAKE_DOCKER_LOG="$TMP/$1-$2.log"
   export FAKE_SCENARIO FAKE_DOCKER_LOG
@@ -208,7 +220,6 @@ run_dc healthy up
 [ "$RC" -eq 0 ] || fail "healthy sentinel up failed"
 assert_no_log "docker start usage-sentinel"
 assert_no_log "docker rm"
-assert_no_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 
 run_dc rewritten_sock_source up
 [ "$RC" -eq 0 ] || fail "Docker Desktop rewritten socket source rejected"
@@ -263,6 +274,17 @@ run_dc container_race_starting up
 [ "$RC" -eq 0 ] || fail "starting container race winner was not awaited"
 [ "$(grep -c 'State.Health.Status' "$LOG")" -eq 2 ] || fail "starting race winner health was not rechecked"
 assert_no_log "docker rm"
+
+run_dc stale_digest up
+[ "$RC" -eq 0 ] || fail "stale digest sentinel up failed"
+assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
+assert_log "docker rm -f usage-sentinel"
+assert_log "docker run -d --name usage-sentinel"
+pull_line="$(grep -n -m1 'docker pull ghcr.io/sadotu/usage-sentinel:latest' "$LOG" | cut -d: -f1)"
+rm_line="$(grep -n -m1 'docker rm -f usage-sentinel' "$LOG" | cut -d: -f1)"
+run_line="$(grep -n -m1 '^docker run -d --name usage-sentinel' "$LOG" | cut -d: -f1)"
+[ "$pull_line" -lt "$rm_line" ] || fail "stale digest recreate out of order: pull did not precede rm"
+[ "$rm_line" -lt "$run_line" ] || fail "stale digest recreate out of order: rm did not precede run"
 
 run_dc healthy sentinel-update
 [ "$RC" -eq 0 ] || fail "sentinel-update failed"
