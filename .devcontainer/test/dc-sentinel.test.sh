@@ -269,6 +269,7 @@ run_dc healthy sentinel-update
 assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 assert_log "docker rm -f usage-sentinel"
 assert_log "docker run -d --name usage-sentinel"
+assert_log "--log-opt max-size=10m --log-opt max-file=3"
 assert_no_log "docker volume rm"
 
 echo "PASS: dc sentinel lifecycle"

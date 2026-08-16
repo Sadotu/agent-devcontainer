@@ -348,7 +348,14 @@ create_sentinel() {
     --group-add "$gid" \
     --health-cmd "$SENTINEL_HEALTH_CMD" \
     --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s \
+    --log-opt max-size=10m --log-opt max-file=3 \
     "$SENTINEL_IMAGE" >/dev/null
+}
+
+recreate_sentinel() {
+  docker rm -f "$SENTINEL_NAME" >/dev/null
+  create_sentinel
+  wait_for_sentinel
 }
 
 ensure_sentinel() {
@@ -406,9 +413,7 @@ case "$cmd" in
       exit 1
     fi
     docker pull "$SENTINEL_IMAGE"
-    docker rm -f "$SENTINEL_NAME" >/dev/null
-    create_sentinel
-    wait_for_sentinel
+    recreate_sentinel
     ;;
   shell)
     devcontainer exec --workspace-folder "$ROOT" bash
