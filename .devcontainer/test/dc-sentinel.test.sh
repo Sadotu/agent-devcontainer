@@ -86,11 +86,7 @@ case "${1:-} ${2:-}" in
     ;;
   "network create") [ "$FAKE_SCENARIO" != network_race ] ;;
   "image inspect")
-    if [ "$FAKE_SCENARIO" = stale_digest ]; then
-      echo "sha256:pulled-fresh"
-    else
-      echo "$FAKE_PULLED_IMAGE_ID"
-    fi
+    [ "$FAKE_SCENARIO" = stale_digest ] && echo "sha256:pulled-fresh" || echo "sha256:current"
     ;;
   "container inspect")
     if [[ "$FAKE_SCENARIO" = missing || "$FAKE_SCENARIO" = container_race || "$FAKE_SCENARIO" = container_race_starting ]] &&
@@ -99,7 +95,7 @@ case "${1:-} ${2:-}" in
     fi
     format="${5:-}"
     case "$format" in
-      '{{.Image}}') echo "$FAKE_CONTAINER_IMAGE_ID" ;;
+      '{{.Image}}') echo "sha256:current" ;;
       *State.Status*) [[ "$FAKE_SCENARIO" = stopped || "$FAKE_SCENARIO" = starting_stopped ]] && echo exited || echo running ;;
       *State.Health.Status*)
         if [ "$FAKE_SCENARIO" = unhealthy ]; then
@@ -181,10 +177,6 @@ export DC_DOCKER_SOCK="$TMP/docker.sock"
 FAKE_SOCK_GID="$(stat -c '%g' "$DC_DOCKER_SOCK")"
 export FAKE_SOCK_GID
 
-FAKE_CONTAINER_IMAGE_ID="sha256:current"
-FAKE_PULLED_IMAGE_ID="sha256:current"
-export FAKE_CONTAINER_IMAGE_ID FAKE_PULLED_IMAGE_ID
-
 run_dc() {
   FAKE_SCENARIO="$1" LOG="$TMP/$1-$2.log" FAKE_DOCKER_LOG="$TMP/$1-$2.log"
   export FAKE_SCENARIO FAKE_DOCKER_LOG
@@ -213,11 +205,13 @@ assert_log "-v $DC_DOCKER_SOCK:/var/run/docker.sock"
 assert_log "--group-add $FAKE_SOCK_GID"
 assert_log "--health-cmd $FAKE_HEALTH_CMD"
 assert_log "--health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s"
+assert_log "--log-opt max-size=10m --log-opt max-file=3"
 # `up` is the only start path — it must always recreate from a clean build.
 assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container --build-no-cache"
 
 run_dc healthy up
 [ "$RC" -eq 0 ] || fail "healthy sentinel up failed"
+assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 assert_no_log "docker start usage-sentinel"
 assert_no_log "docker rm"
 
@@ -245,6 +239,7 @@ run_dc incompatible up
 [ "$RC" -ne 0 ] || fail "incompatible sentinel accepted"
 grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
+assert_no_log "docker pull"
 grep -qi 'remove.*manually' "$TMP/err" || fail "incompatible guidance recommends unusable update path"
 
 for scenario in duplicate_env extra_mount extra_network bad_health different_health missing_sock_mount missing_group_add; do

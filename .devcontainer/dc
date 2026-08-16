@@ -9,7 +9,8 @@
 # dir doesn't match the name declared in devcontainer.json's containerEnv.
 #
 #   ./.devcontainer/dc up        rebuild the image from scratch, recreate the
-#                                  container, and start it (runs postCreate)
+#                                  container, and start it (runs postCreate);
+#                                  also refreshes usage-sentinel on a digest change
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
 #   ./.devcontainer/dc setup     re-run setup-agents.sh inside the running
 #                                  container (retry after a failed Bitwarden
@@ -27,7 +28,8 @@
 #                                  canonical copy baked into the image (backup
 #                                  kept as dc.bak). up warns on drift.
 #   ./.devcontainer/dc sentinel-update
-#                                  pull + recreate usage-sentinel (data kept)
+#                                  manual/on-demand pull + recreate usage-sentinel
+#                                  (data kept); up does this automatically too
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc nuke      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc wipe-volumes --yes
@@ -376,7 +378,7 @@ ensure_sentinel() {
     echo "ERROR: existing usage-sentinel container is incompatible; inspect and remove it manually before recreating it with the fixed named volumes." >&2
     return 1
   fi
-  docker pull "$SENTINEL_IMAGE"
+  docker pull "$SENTINEL_IMAGE" || echo "WARNING: usage-sentinel pull failed — keeping current image." >&2
   if [ "$(sentinel_inspect '{{.Image}}')" != "$(docker image inspect --format '{{.Id}}' "$SENTINEL_IMAGE")" ]; then
     recreate_sentinel
     return
