@@ -189,4 +189,19 @@ grep -q 'Superpowers (Claude): unknown' <<<"$out" \
 grep -q 'Superpowers (Codex):  unknown' <<<"$out" \
   || fail "Codex version did not degrade to unknown: $out"
 
+# --- setup-agents.sh delegates to the library instead of inlining ---
+grep -q 'source "$_SETUP_DIR/lib/superpowers.sh"' "$SETUP" \
+  || fail "setup-agents.sh does not source the superpowers library"
+for fn in superpowers_update_claude superpowers_update_codex superpowers_report_versions; do
+  grep -Eqx "[[:space:]]*$fn" "$SETUP" || fail "setup-agents.sh never calls $fn"
+done
+grep -q 'if \[ ! -d "\$CODEX_SP_DIR" \]' "$SETUP" \
+  && fail "setup-agents.sh still skips the Codex clone when the dir exists"
+grep -q 'claude plugin install superpowers' "$SETUP" \
+  && fail "setup-agents.sh still installs Claude superpowers inline"
+
+# --- the image ships the library ---
+grep -q 'COPY lib/superpowers.sh /opt/agent-devcontainer/lib/superpowers.sh' "$DOCKERFILE" \
+  || fail "Dockerfile does not copy the superpowers library into the image"
+
 echo "PASS: superpowers plugin updates"

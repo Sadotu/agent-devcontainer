@@ -22,6 +22,11 @@ _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
 
+# Superpowers install/update for both agent CLIs (issue #60). Sourced, not
+# executed — the library defines functions only.
+# shellcheck source=lib/superpowers.sh
+source "$_SETUP_DIR/lib/superpowers.sh"
+
 # Surface the image version (issue #24). postCreate output streams into the
 # `dc up` logs, so this is the authoritative "build/rebuild logs display the
 # version" surface — baked into the image, independent of the
@@ -418,10 +423,9 @@ else
 fi
 
 echo "==> Claude Code plugins/skills"
+superpowers_update_claude
 # `claude plugin marketplace add` / `claude plugin install` are safe to re-run —
 # an already-added marketplace or already-installed plugin just no-ops.
-claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
 claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || true
 claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || true
 
@@ -438,42 +442,7 @@ echo "==> Self-authored skills (dotagents)"
   echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
 
 echo "==> Codex plugins/skills"
-# Codex reserves the marketplace name "openai-curated" (what openai/plugins'
-# own manifest declares) and refuses it headlessly. Work around it by copying
-# just the superpowers plugin into a local marketplace dir under a different
-# name. Manifest path/shape: <root>/.agents/plugins/marketplace.json, plugin
-# content under <root>/plugins/<name>/.
-CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
-if [ ! -d "$CODEX_SP_DIR" ]; then
-  tmp_clone="$(mktemp -d)"
-  if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
-      >/tmp/codex-superpowers-clone.log 2>&1; then
-    mkdir -p "$CODEX_SP_DIR/plugins/superpowers" "$CODEX_SP_DIR/.agents/plugins"
-    cp -r "$tmp_clone/plugins/superpowers/." "$CODEX_SP_DIR/plugins/superpowers/"
-    cat > "$CODEX_SP_DIR/.agents/plugins/marketplace.json" <<'JSON'
-{
-  "name": "superpowers-curated",
-  "interface": { "displayName": "Superpowers (official plugin, local marketplace)" },
-  "plugins": [
-    {
-      "name": "superpowers",
-      "source": { "source": "local", "path": "./plugins/superpowers" },
-      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL", "products": ["CODEX"] },
-      "category": "Developer Tools"
-    }
-  ]
-}
-JSON
-  else
-    echo "WARNING: failed to clone openai/plugins for Codex superpowers."
-    echo "         See /tmp/codex-superpowers-clone.log for details."
-  fi
-  rm -rf "$tmp_clone"
-fi
-if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
-  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || true
-  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
-fi
+superpowers_update_codex
 
 # Caveman for Codex: the skill files already live in .agents/skills/caveman*
 # (Codex reads .agents/skills/ natively) and the always-on activation rule is
@@ -484,6 +453,9 @@ else
   echo "WARNING: caveman skill or AGENTS.md activation rule missing — check"
   echo "         $WORKSPACE/.agents/skills/caveman and $WORKSPACE/AGENTS.md"
 fi
+
+echo "==> Superpowers versions"
+superpowers_report_versions
 
 echo "==> Done."
 echo ""
