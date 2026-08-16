@@ -109,6 +109,8 @@ COPY lib/bw-session.sh /opt/agent-devcontainer/lib/bw-session.sh
 # Sourceable readiness-marker plumbing used by setup-agents.sh. Sourced, not
 # executed — no chmod +x needed (same as bw-session.sh).
 COPY lib/setup-marker.sh /opt/agent-devcontainer/lib/setup-marker.sh
+# Sourceable opt-in Caveman policy check used by setup-agents.sh (issue #65).
+COPY lib/caveman-policy.sh /opt/agent-devcontainer/lib/caveman-policy.sh
 COPY githooks/pre-push /opt/agent-devcontainer/githooks/pre-push
 COPY agents.toml /opt/agent-devcontainer/agents.toml
 COPY claude-settings.json /opt/agent-devcontainer/claude-settings.json
