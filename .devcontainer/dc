@@ -8,7 +8,8 @@
 # workspace directory's name; override by exporting PROJECT_NAME if the repo
 # dir doesn't match the name declared in devcontainer.json's containerEnv.
 #
-#   ./.devcontainer/dc up        build + start the container (runs postCreate)
+#   ./.devcontainer/dc up        rebuild the image from scratch, recreate the
+#                                  container, and start it (runs postCreate)
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
 #   ./.devcontainer/dc setup     re-run setup-agents.sh inside the running
 #                                  container (retry after a failed Bitwarden
@@ -21,11 +22,10 @@
 #                                  overwrite container and host/global auth.json
 #                                  from vault (--force required — clobbers a
 #                                  possibly live, already-refreshed token)
-#   ./.devcontainer/dc rebuild   rebuild image from scratch, then start
 #   ./.devcontainer/dc self-update
 #                                  overwrite this per-project dc with the
 #                                  canonical copy baked into the image (backup
-#                                  kept as dc.bak). up/rebuild warn on drift.
+#                                  kept as dc.bak). up warns on drift.
 #   ./.devcontainer/dc sentinel-update
 #                                  pull + recreate usage-sentinel (data kept)
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
@@ -196,7 +196,7 @@ extract_canonical_dc() {
   [ -s "$1" ]
 }
 
-# Non-fatal drift check for up/rebuild: warn if the local per-project `dc`
+# Non-fatal drift check for up: warn if the local per-project `dc`
 # differs from the canonical baked template. Silent no-op when the canonical
 # copy can't be read (offline, older image, build-based project) so it never
 # blocks the container coming up.
@@ -387,12 +387,6 @@ ensure_sentinel() {
 
 case "$cmd" in
   up)
-    ensure_sentinel
-    pull_image
-    warn_if_dc_drifted
-    devcontainer up --workspace-folder "$ROOT"
-    ;;
-  rebuild)
     ensure_sentinel
     pull_image
     warn_if_dc_drifted

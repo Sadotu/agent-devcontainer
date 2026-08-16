@@ -84,7 +84,7 @@ When running **inside the container** (workspace mounted at
   passes `--pull`, so it reuses whatever digest the local Docker cache has
   for the tag. Three rounds of published fixes never reached the machine
   that was testing them; every "still broken" report was the original
-  image re-running. `dc up`/`dc rebuild` now `docker pull` the image named
+  image re-running. `dc up` now `docker pull`s the image named
   in `devcontainer.json` first. When debugging "my fix didn't work",
   compare the `FROM ...@sha256:` digest in the rebuild log against the
   latest published digest before assuming the fix is wrong.
@@ -113,7 +113,7 @@ When running **inside the container** (workspace mounted at
   headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
   `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
   self-renews via its refresh token, so it doesn't need this.
-- issue-orchestrator self-updates on every `dc up`/rebuild, same mechanism as
+- issue-orchestrator self-updates on every `dc up`, same mechanism as
   Claude Code/Codex: `setup-agents.sh` installs
   `@nickysagan/issue-orchestrator@latest` from npmjs into the user-owned
   `~/.npm-global` prefix, which shadows the Dockerfile-baked vendored-tarball
@@ -165,7 +165,7 @@ When running **inside the container** (workspace mounted at
   `mcp__github__*` in `~/.claude/settings.json` (merged, every run) and
   strips any `[mcp_servers.*github*]` from Codex's `config.toml` (no
   ambient connector there, but same opt-in-config risk). Needs
-  `dc rebuild`, not `dc setup` — it's baked into the image.
+  `dc up`, not `dc setup` — it's baked into the image.
 
 ### GitHub App auth
 

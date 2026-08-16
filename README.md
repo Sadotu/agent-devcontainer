@@ -37,7 +37,7 @@ inside the container run `codex login --device-auth`, exit, then on the host run
 ## Daily use
 
 ```bash
-./.devcontainer/dc up
+./.devcontainer/dc up      # pulls image, recreates container from a clean build
 ./.devcontainer/dc shell
 start work
 ```
@@ -46,7 +46,6 @@ Common commands:
 ```bash
 ./.devcontainer/dc exec <command>  # one-off command in container
 ./.devcontainer/dc setup            # retry credentials/setup
-./.devcontainer/dc rebuild          # recreate and pull image
 ./.devcontainer/dc down             # stop/remove container; volumes remain
 ./.devcontainer/dc codex-push       # container auth -> Bitwarden + host
 ./.devcontainer/dc codex-pull --force # Bitwarden auth -> container + host
