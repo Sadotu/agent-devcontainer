@@ -27,6 +27,7 @@ assert_invalid_usage() {
 source_test() {
     local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha
     local short_commit full_commit pkg_version expected_sha
+    local output invocation curl_calls custom_curl_calls
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
 
@@ -153,8 +154,20 @@ exit 37
 EOF
     chmod +x "$temp_dir/issue-orchestrator"
 
+    # Fake `curl` standing in for the Sentinel health probe: logs the args it
+    # was called with and exits with $CURL_EXIT_CODE (default 0, i.e. Sentinel
+    # healthy), so both the reachable and unreachable paths are exercised
+    # without touching a real network.
+    cat >"$temp_dir/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CURL_TEST_LOG"
+exit "${CURL_EXIT_CODE:-0}"
+EOF
+    chmod +x "$temp_dir/curl"
+
     PATH="$temp_dir:$PATH"
     export START_TEST_LOG="$temp_dir/invocation"
+    export CURL_TEST_LOG="$temp_dir/curl-invocations"
     # shellcheck source=../start-work.sh
     source "$(dirname "$0")/../start-work.sh"
 
@@ -162,6 +175,7 @@ EOF
     assert_invalid_usage work extra
     assert_invalid_usage nope
 
+    : >"$CURL_TEST_LOG"
     set +e
     start work
     status=$?
@@ -171,6 +185,33 @@ EOF
     [[ ${invocation[0]} == "$PWD" ]]
     [[ ${invocation[1]} == argc=0 ]]
     [[ ${#invocation[@]} -eq 2 ]]
+    mapfile -t curl_calls <"$CURL_TEST_LOG"
+    [[ ${#curl_calls[@]} -eq 1 ]]
+    [[ ${curl_calls[0]} == *'http://usage-sentinel:4317/health'* ]]
+
+    # Sentinel unreachable: issue-orchestrator must never run, and the error
+    # must name Sentinel so it's not mistaken for an unrelated failure.
+    rm -f "$START_TEST_LOG"
+    : >"$CURL_TEST_LOG"
+    set +e
+    output="$(CURL_EXIT_CODE=7 start work 2>&1)"
+    status=$?
+    set -e
+    [[ $status -ne 0 ]]
+    [[ ! -f $START_TEST_LOG ]]
+    [[ $output == *'Sentinel unreachable'* ]]
+    [[ $output == *'http://usage-sentinel:4317'* ]]
+
+    # SENTINEL_URL override must reach the probe, not just the default.
+    : >"$CURL_TEST_LOG"
+    set +e
+    SENTINEL_URL='http://custom-sentinel:9999' start work
+    status=$?
+    set -e
+    [[ $status -eq 37 ]]
+    mapfile -t custom_curl_calls <"$CURL_TEST_LOG"
+    [[ ${#custom_curl_calls[@]} -eq 1 ]]
+    [[ ${custom_curl_calls[0]} == *'http://custom-sentinel:9999/health'* ]]
 
     # worktree-warden summary sourcing is guarded by `[[ -r
     # /opt/agent-devcontainer/worktree-warden-summary.sh ]]`, an absolute
