@@ -76,4 +76,20 @@ ws="$(make_ws optin-noagentsmd skill noagentsmd)"
 out="$(run_check 1 "$ws")" || fail "missing AGENTS.md aborted under set -e"
 grep -q 'WARNING' <<<"$out" || fail "expected WARNING for absent AGENTS.md: $out"
 
+# --- structural guards on the wiring ---
+SETUP="$ROOT/.devcontainer/setup-agents.sh"
+DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
+TEMPLATE="$ROOT/.devcontainer/devcontainer.json.template"
+
+grep -q 'source .*lib/caveman-policy.sh' "$SETUP" \
+  || fail "setup-agents.sh does not source the caveman-policy lib"
+grep -q 'caveman_policy_check "\$WORKSPACE"' "$SETUP" \
+  || fail "setup-agents.sh does not call caveman_policy_check"
+grep -q 'WARNING: caveman' "$SETUP" \
+  && fail "the old unconditional caveman warning is still inline in setup-agents.sh"
+grep -q 'COPY lib/caveman-policy.sh' "$DOCKERFILE" \
+  || fail "Dockerfile does not bake the caveman-policy lib into the image"
+grep -q 'AGENT_REQUIRE_CAVEMAN' "$TEMPLATE" \
+  && fail "downstream scaffold template must not opt into caveman"
+
 echo "PASS: caveman policy check"

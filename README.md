@@ -56,3 +56,4 @@ Security boundary: only project repository is bind-mounted at `/workspaces/<proj
 host home, SSH keys, cloud credentials, browser profiles, password stores, and Docker socket
 are not mounted. Agent and App credentials persist in container-side named volumes. Inside container, use `ghx` for GitHub CLI;
 never run `gh auth login` or `gh auth setup-git`. Worktree Warden autostarts one watcher per repository; an unresolved cleanup failure shows up in new shells, `start work`, and `worktree-warden status`.
+Setup verifies the Caveman style skill and its `AGENTS.md` activation rule only when a project opts in with `"AGENT_REQUIRE_CAVEMAN": "1"` in `devcontainer.json` `containerEnv`; projects that skip it get no warning.
