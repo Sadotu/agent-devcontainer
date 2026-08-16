@@ -22,8 +22,8 @@ _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
 
-# Opt-in Caveman policy check (issue #65) — advisory, silent unless the
-# workspace sets REQUIRE_CAVEMAN=1. Sourced, not executed.
+# Caveman policy check (issue #65) — advisory, runs unconditionally, silent
+# when Caveman is already active. Sourced, not executed.
 # shellcheck source=lib/caveman-policy.sh
 source "$_SETUP_DIR/lib/caveman-policy.sh"
 
@@ -482,8 +482,7 @@ fi
 
 # Caveman for Codex: no plugin install needed — the skill files live in the
 # workspace's own .agents/skills/caveman* (Codex reads .agents/skills/
-# natively). Caveman is a response-style preference, not setup readiness, so
-# this validates nothing unless the workspace declared REQUIRE_CAVEMAN=1.
+# natively). Only warns when Caveman is not active — no opt-in required.
 caveman_policy_check "$WORKSPACE"
 
 echo "==> Done."

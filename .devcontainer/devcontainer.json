@@ -25,8 +25,7 @@
     "SENTINEL_URL": "http://usage-sentinel:4317",
     "PROJECT_NAME": "agent-devcontainer",
     "GH_OWNER": "Sadotu",
-    "APP_ID": "4217970",
-    "REQUIRE_CAVEMAN": "1"
+    "APP_ID": "4217970"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
   "postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh",
