@@ -201,6 +201,8 @@ assert_log "-v $DC_DOCKER_SOCK:/var/run/docker.sock"
 assert_log "--group-add $FAKE_SOCK_GID"
 assert_log "--health-cmd $FAKE_HEALTH_CMD"
 assert_log "--health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s"
+# `up` is the only start path — it must always recreate from a clean build.
+assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container --build-no-cache"
 
 run_dc healthy up
 [ "$RC" -eq 0 ] || fail "healthy sentinel up failed"
@@ -211,10 +213,18 @@ assert_no_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 run_dc rewritten_sock_source up
 [ "$RC" -eq 0 ] || fail "Docker Desktop rewritten socket source rejected"
 
-run_dc stopped rebuild
-[ "$RC" -eq 0 ] || fail "stopped sentinel rebuild failed"
+run_dc stopped up
+[ "$RC" -eq 0 ] || fail "stopped sentinel up failed"
 assert_log "docker start usage-sentinel"
 assert_no_log "docker rm"
+
+# `rebuild` merged into `up`: the retired name must fail loudly with usage,
+# never silently start or touch the sentinel.
+run_dc healthy rebuild
+[ "$RC" -ne 0 ] || fail "retired 'rebuild' subcommand accepted"
+grep -Fq './.devcontainer/dc up' "$TMP/out" || fail "retired subcommand printed no usage"
+grep -Fq 'dc rebuild' "$TMP/out" && fail "usage still advertises rebuild"
+assert_no_log "devcontainer up"
 
 run_dc unhealthy up
 [ "$RC" -ne 0 ] || fail "unhealthy sentinel accepted"
