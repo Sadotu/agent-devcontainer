@@ -27,3 +27,58 @@ superpowers_update_claude() {
   claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
   return 0
 }
+
+# Codex reserves the marketplace name "openai-curated" (what openai/plugins'
+# own manifest declares) and refuses it headlessly, so the plugin is copied
+# into a local marketplace dir under a different name. `codex plugin
+# marketplace upgrade` only refreshes *Git* marketplace snapshots, so it can
+# never touch a local one — the only way to advance Codex is to refresh this
+# directory's contents and re-run `codex plugin add`, which re-resolves the
+# version from the manifest and replaces its versioned cache.
+#
+# The clone runs on every setup, not just when the directory is missing
+# (issue #60): ~/.codex is a persisted volume, so the old
+# `[ ! -d "$CODEX_SP_DIR" ]` guard pinned Codex forever. New content is
+# staged beside the live tree and swapped in, so a partial copy can never
+# replace a working install, and files deleted upstream do not linger.
+superpowers_update_codex() {
+  local tmp_clone staged live
+  tmp_clone="$(mktemp -d)"
+  if ! git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
+      >/tmp/codex-superpowers-clone.log 2>&1; then
+    echo "WARNING: failed to clone openai/plugins for Codex superpowers."
+    echo "         See /tmp/codex-superpowers-clone.log for details."
+    echo "         Keeping the existing Codex Superpowers copy, if any."
+    rm -rf "$tmp_clone"
+    return 0
+  fi
+
+  live="$CODEX_SP_DIR/plugins/superpowers"
+  staged="$CODEX_SP_DIR/plugins/.superpowers.new"
+  mkdir -p "$CODEX_SP_DIR/plugins" "$CODEX_SP_DIR/.agents/plugins"
+  rm -rf "$staged"
+  mkdir -p "$staged"
+  cp -r "$tmp_clone/plugins/superpowers/." "$staged/"
+  rm -rf "$tmp_clone"
+  rm -rf "$live"
+  mv "$staged" "$live"
+
+  cat > "$CODEX_SP_DIR/.agents/plugins/marketplace.json" <<'JSON'
+{
+  "name": "superpowers-curated",
+  "interface": { "displayName": "Superpowers (official plugin, local marketplace)" },
+  "plugins": [
+    {
+      "name": "superpowers",
+      "source": { "source": "local", "path": "./plugins/superpowers" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL", "products": ["CODEX"] },
+      "category": "Developer Tools"
+    }
+  ]
+}
+JSON
+
+  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || true
+  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
+  return 0
+}
