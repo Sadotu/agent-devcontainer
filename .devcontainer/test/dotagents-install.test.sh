@@ -38,7 +38,7 @@ git -C "$ROOT" ls-files --error-unmatch agents.lock >/dev/null 2>&1 || \
 assert_file_not_contains '/agents.lock' "$GITIGNORE"
 
 # Runtime setup and image build must both integrate the locked installer.
-assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
+assert_file_contains '$TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR"' "$SETUP"
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
 assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFILE"
 
@@ -89,24 +89,24 @@ esac
 FAKE_NPX
 chmod +x "$TMP/bin/npx"
 
-# A fresh clone seeded with repository config and lock must remain byte-clean
-# after routine setup.
+# Routine setup now re-resolves every skill to its source's latest commit on
+# every dc up (a stale pin is what let github-issue's Phase 7 script silently
+# rot upstream), so a fresh clone's lock is expected to move, not stay
+# byte-clean.
 mkdir "$TMP/clean-project"
 cp "$ROOT/.devcontainer/agents.toml" "$TMP/clean-project/agents.toml"
 cp "$LOCK" "$TMP/clean-project/agents.lock"
-cp "$LOCK" "$TMP/clean-project/agents.lock.expected"
 git -C "$TMP/clean-project" init -q
-git -C "$TMP/clean-project" add agents.toml agents.lock agents.lock.expected
+git -C "$TMP/clean-project" add agents.toml agents.lock
 git -C "$TMP/clean-project" -c user.name=Test -c user.email=test@example.invalid \
   commit -qm 'Seed locked project'
 DOTAGENTS_CALL_LOG="$TMP/clean-project.calls.log" PATH="$TMP/bin:$PATH" \
-  bash "$HELPER" "$TMP/clean-project" "$ROOT/.devcontainer"
-printf '%s\n' '-y @sentry/dotagents@1.17.0 install --frozen' > \
+  bash "$HELPER" --upgrade "$TMP/clean-project" "$ROOT/.devcontainer"
+printf '%s\n' '-y @sentry/dotagents@1.17.0 install' > \
   "$TMP/clean-project.calls.expected"
 assert_file_equals "$TMP/clean-project.calls.expected" "$TMP/clean-project.calls.log"
-assert_file_equals "$TMP/clean-project/agents.lock.expected" "$TMP/clean-project/agents.lock"
-[[ -z "$(git -C "$TMP/clean-project" status --porcelain)" ]] || \
-  fail "routine install dirtied clean project"
+printf 'updated-by-fake-npx\n' > "$TMP/clean-project.agents.lock.expected"
+assert_file_equals "$TMP/clean-project.agents.lock.expected" "$TMP/clean-project/agents.lock"
 
 run_helper() {
   local workspace="$1"

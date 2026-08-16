@@ -86,6 +86,12 @@ fi
 # itself stays the pane's foreground process (so the tmux session's lifetime
 # still tracks the daemon's, matching the dedup check above), with `tail -F`
 # backgrounded inside the same pane purely to mirror new log lines into it.
+#
+# worktree-warden's own default for WARDEN_CLEANUP_SCRIPT points at the
+# github-issue skill's old cleanup-merged.sh, which moved (and was renamed)
+# to the github-pr-cleanup skill's cleanup.sh — override it explicitly so
+# the daemon finds the script that's actually installed.
+export WARDEN_CLEANUP_SCRIPT="$WORKSPACE/.agents/skills/github-pr-cleanup/scripts/cleanup.sh"
 git_common_dir="$(git -C "$WORKSPACE" rev-parse --git-common-dir 2>/dev/null)"
 case "$git_common_dir" in
   /*) ;;
