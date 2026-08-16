@@ -22,6 +22,11 @@ _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
 
+# Caveman policy check (issue #65) — advisory, runs unconditionally, silent
+# when Caveman is already active. Sourced, not executed.
+# shellcheck source=lib/caveman-policy.sh
+source "$_SETUP_DIR/lib/caveman-policy.sh"
+
 # Surface the image version (issue #24). postCreate output streams into the
 # `dc up` logs, so this is the authoritative "build/rebuild logs display the
 # version" surface — baked into the image, independent of the
@@ -475,15 +480,10 @@ if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
   codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
 fi
 
-# Caveman for Codex: the skill files already live in .agents/skills/caveman*
-# (Codex reads .agents/skills/ natively) and the always-on activation rule is
-# already in AGENTS.md. Verify only — no plugin install needed.
-if [ -d "$WORKSPACE/.agents/skills/caveman" ] && grep -qi "caveman" "$WORKSPACE/AGENTS.md" 2>/dev/null; then
-  echo "    caveman skill + AGENTS.md activation rule present for Codex."
-else
-  echo "WARNING: caveman skill or AGENTS.md activation rule missing — check"
-  echo "         $WORKSPACE/.agents/skills/caveman and $WORKSPACE/AGENTS.md"
-fi
+# Caveman for Codex: no plugin install needed — the skill files live in the
+# workspace's own .agents/skills/caveman* (Codex reads .agents/skills/
+# natively). Only warns when Caveman is not active — no opt-in required.
+caveman_policy_check "$WORKSPACE"
 
 echo "==> Done."
 echo ""
