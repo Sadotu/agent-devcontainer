@@ -16,6 +16,18 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Run a library function the way setup-agents.sh does: a bare statement under
+# `set -euo pipefail`. This MUST be a fresh `bash` process, not a `( ... )`
+# subshell: bash suppresses errexit inside any command that is part of an
+# `|| fail` list, and that suppression propagates into subshells even when
+# they re-run `set -e` themselves. With a subshell, a function that aborts
+# setup on a failing CLI would still look non-fatal here. Stdout+stderr land
+# in $RUN_OUT; the child's exit status is returned.
+RUN_OUT="$TMP/run.out"
+run_lib() { # <function-name>
+  bash -c 'set -euo pipefail; source "$1"; "$2"' _ "$LIB" "$1" > "$RUN_OUT" 2>&1
+}
+
 [[ -f $LIB ]] || fail "superpowers library missing"
 
 BIN="$TMP/bin"; mkdir -p "$BIN"
@@ -34,8 +46,8 @@ export PATH="$BIN:$PATH"
 
 # --- Claude: all four verbs issued, update verbs after add/install ---
 : > "$LOG"
-( source "$LIB"; superpowers_update_claude >/dev/null 2>&1 ) \
-  || fail "superpowers_update_claude returned nonzero"
+run_lib superpowers_update_claude \
+  || fail "superpowers_update_claude returned nonzero: $(cat "$RUN_OUT")"
 
 grep -qx 'claude plugin marketplace add obra/superpowers-marketplace' "$LOG" \
   || fail "claude marketplace add not issued"
@@ -53,7 +65,7 @@ upd_line="$(grep -n 'marketplace update' "$LOG" | head -1 | cut -d: -f1)"
 
 # --- Claude: a failing CLI must not fail the function ---
 : > "$LOG"
-( export STUB_CLAUDE_RC=1; source "$LIB"; superpowers_update_claude >/dev/null 2>&1 ) \
+( export STUB_CLAUDE_RC=1; run_lib superpowers_update_claude ) \
   || fail "superpowers_update_claude propagated a CLI failure"
 [[ "$(wc -l < "$LOG")" -eq 4 ]] \
   || fail "a failing CLI stopped later Claude commands"
@@ -90,8 +102,8 @@ mkdir -p "$SP/plugins/superpowers/skills/stale"
 printf 'stale\n' > "$SP/plugins/superpowers/skills/stale/SKILL.md"
 printf 'old\n' > "$SP/plugins/superpowers/OLDFILE"
 : > "$LOG"
-( export CODEX_SP_DIR="$SP"; source "$LIB"; superpowers_update_codex >/dev/null 2>&1 ) \
-  || fail "superpowers_update_codex returned nonzero"
+( export CODEX_SP_DIR="$SP"; run_lib superpowers_update_codex ) \
+  || fail "superpowers_update_codex returned nonzero: $(cat "$RUN_OUT")"
 
 grep -q '^git clone' "$LOG" \
   || fail "codex refresh skipped the clone when the directory already existed"
@@ -119,12 +131,62 @@ printf 'keep\n' > "$SP2/plugins/superpowers/skills/keepme/SKILL.md"
 mkdir -p "$SP2/.agents/plugins"
 printf '{"name":"superpowers-curated"}\n' > "$SP2/.agents/plugins/marketplace.json"
 : > "$LOG"
-out="$( export CODEX_SP_DIR="$SP2" STUB_GIT_RC=1
-        source "$LIB"; superpowers_update_codex 2>&1 )" \
+( export CODEX_SP_DIR="$SP2" STUB_GIT_RC=1; run_lib superpowers_update_codex ) \
   || fail "a failed clone made superpowers_update_codex return nonzero"
+out="$(cat "$RUN_OUT")"
 [[ -f "$SP2/plugins/superpowers/skills/keepme/SKILL.md" ]] \
   || fail "failed clone destroyed the existing Codex copy"
 grep -q 'WARNING' <<<"$out" \
   || fail "failed clone printed no WARNING"
+
+# Re-stub both CLIs to emit their real `plugin list --json` shapes:
+# Claude returns a flat array, Codex wraps its entries in `.installed`.
+cat > "$BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+printf 'claude %s\n' "$*" >> "$STUB_LOG"
+if [[ "$*" == "plugin list --json" ]]; then
+  [[ "${STUB_CLAUDE_LIST_RC:-0}" -ne 0 ]] && exit "$STUB_CLAUDE_LIST_RC"
+  cat <<'JSON'
+[{"id":"caveman@caveman","version":"abc123"},
+ {"id":"superpowers@superpowers-marketplace","version":"6.3.0"}]
+JSON
+  exit 0
+fi
+exit "${STUB_CLAUDE_RC:-0}"
+STUB
+chmod +x "$BIN/claude"
+
+cat > "$BIN/codex" <<'STUB'
+#!/usr/bin/env bash
+printf 'codex %s\n' "$*" >> "$STUB_LOG"
+if [[ "$*" == "plugin list --json" ]]; then
+  [[ "${STUB_CODEX_LIST_RC:-0}" -ne 0 ]] && exit "$STUB_CODEX_LIST_RC"
+  cat <<'JSON'
+{"installed":[{"pluginId":"superpowers@superpowers-curated","name":"superpowers","version":"6.3.0"}],"available":[]}
+JSON
+  exit 0
+fi
+exit "${STUB_CODEX_RC:-0}"
+STUB
+chmod +x "$BIN/codex"
+
+# --- versions are printed for both agents ---
+: > "$LOG"
+run_lib superpowers_report_versions \
+  || fail "superpowers_report_versions returned nonzero: $(cat "$RUN_OUT")"
+out="$(cat "$RUN_OUT")"
+grep -q 'Superpowers (Claude): 6.3.0' <<<"$out" \
+  || fail "Claude version not reported: $out"
+grep -q 'Superpowers (Codex):  6.3.0' <<<"$out" \
+  || fail "Codex version not reported: $out"
+
+# --- a failing CLI degrades to `unknown`, never fatal ---
+( export STUB_CLAUDE_LIST_RC=1 STUB_CODEX_LIST_RC=1; run_lib superpowers_report_versions ) \
+  || fail "version reporting propagated a CLI failure"
+out="$(cat "$RUN_OUT")"
+grep -q 'Superpowers (Claude): unknown' <<<"$out" \
+  || fail "Claude version did not degrade to unknown: $out"
+grep -q 'Superpowers (Codex):  unknown' <<<"$out" \
+  || fail "Codex version did not degrade to unknown: $out"
 
 echo "PASS: superpowers plugin updates"

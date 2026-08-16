@@ -82,3 +82,25 @@ JSON
   codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
   return 0
 }
+
+# Print the installed Superpowers version for each agent so drift is visible
+# in the setup log instead of silent. `plugin list --json` is an explicit
+# read-only subcommand on both CLIs — deliberately NOT a bare or flag-based
+# invocation, which this repo has twice mistaken for a version probe
+# (issue-orchestrator, worktree-warden) and started a daemon instead. The two
+# CLIs disagree on shape: Claude returns a flat array of {id, version}, Codex
+# wraps its entries in `.installed` and keys them `pluginId`.
+# Reporting is never fatal: anything unreadable degrades to `unknown`. The
+# `|| true` belongs on the whole pipeline, not just the assignment — under the
+# caller's `set -euo pipefail` a failing `plugin list` makes the pipeline
+# nonzero even though `jq` succeeded, and that would abort setup outright.
+superpowers_report_versions() {
+  local claude_version codex_version
+  claude_version="$(claude plugin list --json 2>/dev/null \
+    | jq -r 'map(select(.id | startswith("superpowers@"))) | .[0].version // empty' 2>/dev/null || true)"
+  codex_version="$(codex plugin list --json 2>/dev/null \
+    | jq -r '.installed | map(select(.pluginId | startswith("superpowers@"))) | .[0].version // empty' 2>/dev/null || true)"
+  printf '    Superpowers (Claude): %s\n' "${claude_version:-unknown}"
+  printf '    Superpowers (Codex):  %s\n' "${codex_version:-unknown}"
+  return 0
+}
