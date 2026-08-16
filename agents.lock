@@ -5,16 +5,22 @@ version = 1
 source = "Sadotu/agent-skills"
 resolved_url = "https://github.com/Sadotu/agent-skills"
 resolved_path = "skills/github-issue"
-resolved_commit = "49fe8fba4d53d17c3a9142f60ce15c1313a94dba"
+resolved_commit = "743d7906adb0a750a4d9ac19c17727eb05abcc1d"
+
+[skills.github-pr-cleanup]
+source = "Sadotu/agent-skills"
+resolved_url = "https://github.com/Sadotu/agent-skills"
+resolved_path = "skills/github-pr-cleanup"
+resolved_commit = "743d7906adb0a750a4d9ac19c17727eb05abcc1d"
 
 [skills.review-pr]
 source = "Sadotu/agent-skills"
 resolved_url = "https://github.com/Sadotu/agent-skills"
 resolved_path = "skills/review-pr"
-resolved_commit = "49fe8fba4d53d17c3a9142f60ce15c1313a94dba"
+resolved_commit = "743d7906adb0a750a4d9ac19c17727eb05abcc1d"
 
 [skills.setup]
 source = "Sadotu/agent-skills"
 resolved_url = "https://github.com/Sadotu/agent-skills"
 resolved_path = "skills/setup"
-resolved_commit = "49fe8fba4d53d17c3a9142f60ce15c1313a94dba"
+resolved_commit = "743d7906adb0a750a4d9ac19c17727eb05abcc1d"

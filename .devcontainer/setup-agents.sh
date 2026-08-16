@@ -429,9 +429,12 @@ echo "==> Self-authored skills (dotagents)"
 # Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
 # distributed via dotagents instead of a per-repo file copy — one command
 # symlinks each skill into every tool's expected location (.claude/skills/,
-# Codex's .agents/skills/, ...). The helper installs the baked manifest with a
-# pinned dotagents version and preserves an existing lock via frozen mode.
-($TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /') || \
+# Codex's .agents/skills/, ...). --upgrade re-resolves every skill to its
+# source's latest commit on every dc up (like issue-orchestrator/worktree-warden's
+# @latest installs below) instead of replaying agents.lock's pinned commit
+# forever — a stale pin is what let github-issue's Phase 7 script silently
+# rot after it moved to the github-pr-cleanup skill upstream.
+($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /') || \
   echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
 
 echo "==> Codex plugins/skills"
