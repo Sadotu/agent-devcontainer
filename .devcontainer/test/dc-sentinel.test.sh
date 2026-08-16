@@ -85,6 +85,9 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "network create") [ "$FAKE_SCENARIO" != network_race ] ;;
+  "image inspect")
+    [ "$FAKE_SCENARIO" = stale_digest ] && echo "sha256:pulled-fresh" || echo "sha256:current"
+    ;;
   "container inspect")
     if [[ "$FAKE_SCENARIO" = missing || "$FAKE_SCENARIO" = container_race || "$FAKE_SCENARIO" = container_race_starting ]] &&
       ! grep -Fq 'docker run -d --name usage-sentinel' "$FAKE_DOCKER_LOG"; then
@@ -92,6 +95,7 @@ case "${1:-} ${2:-}" in
     fi
     format="${5:-}"
     case "$format" in
+      '{{.Image}}') echo "sha256:current" ;;
       *State.Status*) [[ "$FAKE_SCENARIO" = stopped || "$FAKE_SCENARIO" = starting_stopped ]] && echo exited || echo running ;;
       *State.Health.Status*)
         if [ "$FAKE_SCENARIO" = unhealthy ]; then
@@ -201,14 +205,15 @@ assert_log "-v $DC_DOCKER_SOCK:/var/run/docker.sock"
 assert_log "--group-add $FAKE_SOCK_GID"
 assert_log "--health-cmd $FAKE_HEALTH_CMD"
 assert_log "--health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s"
+assert_log "--log-opt max-size=10m --log-opt max-file=3"
 # `up` is the only start path — it must always recreate from a clean build.
 assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container --build-no-cache"
 
 run_dc healthy up
 [ "$RC" -eq 0 ] || fail "healthy sentinel up failed"
+assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 assert_no_log "docker start usage-sentinel"
 assert_no_log "docker rm"
-assert_no_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 
 run_dc rewritten_sock_source up
 [ "$RC" -eq 0 ] || fail "Docker Desktop rewritten socket source rejected"
@@ -234,6 +239,7 @@ run_dc incompatible up
 [ "$RC" -ne 0 ] || fail "incompatible sentinel accepted"
 grep -qi incompatible "$TMP/err" || fail "incompatible failure unclear"
 assert_no_log "docker rm"
+assert_no_log "docker pull"
 grep -qi 'remove.*manually' "$TMP/err" || fail "incompatible guidance recommends unusable update path"
 
 for scenario in duplicate_env extra_mount extra_network bad_health different_health missing_sock_mount missing_group_add; do
@@ -264,11 +270,23 @@ run_dc container_race_starting up
 [ "$(grep -c 'State.Health.Status' "$LOG")" -eq 2 ] || fail "starting race winner health was not rechecked"
 assert_no_log "docker rm"
 
+run_dc stale_digest up
+[ "$RC" -eq 0 ] || fail "stale digest sentinel up failed"
+assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
+assert_log "docker rm -f usage-sentinel"
+assert_log "docker run -d --name usage-sentinel"
+pull_line="$(grep -n -m1 'docker pull ghcr.io/sadotu/usage-sentinel:latest' "$LOG" | cut -d: -f1)"
+rm_line="$(grep -n -m1 'docker rm -f usage-sentinel' "$LOG" | cut -d: -f1)"
+run_line="$(grep -n -m1 '^docker run -d --name usage-sentinel' "$LOG" | cut -d: -f1)"
+[ "$pull_line" -lt "$rm_line" ] || fail "stale digest recreate out of order: pull did not precede rm"
+[ "$rm_line" -lt "$run_line" ] || fail "stale digest recreate out of order: rm did not precede run"
+
 run_dc healthy sentinel-update
 [ "$RC" -eq 0 ] || fail "sentinel-update failed"
 assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 assert_log "docker rm -f usage-sentinel"
 assert_log "docker run -d --name usage-sentinel"
+assert_log "--log-opt max-size=10m --log-opt max-file=3"
 assert_no_log "docker volume rm"
 
 echo "PASS: dc sentinel lifecycle"

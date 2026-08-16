@@ -9,7 +9,8 @@
 # dir doesn't match the name declared in devcontainer.json's containerEnv.
 #
 #   ./.devcontainer/dc up        rebuild the image from scratch, recreate the
-#                                  container, and start it (runs postCreate)
+#                                  container, and start it (runs postCreate);
+#                                  also refreshes usage-sentinel on a digest change
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
 #   ./.devcontainer/dc setup     re-run setup-agents.sh inside the running
 #                                  container (retry after a failed Bitwarden
@@ -27,7 +28,8 @@
 #                                  canonical copy baked into the image (backup
 #                                  kept as dc.bak). up warns on drift.
 #   ./.devcontainer/dc sentinel-update
-#                                  pull + recreate usage-sentinel (data kept)
+#                                  manual/on-demand pull + recreate usage-sentinel
+#                                  (data kept); up does this automatically too
 #   ./.devcontainer/dc down      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc nuke      stop + remove the container (volumes kept)
 #   ./.devcontainer/dc wipe-volumes --yes
@@ -348,7 +350,14 @@ create_sentinel() {
     --group-add "$gid" \
     --health-cmd "$SENTINEL_HEALTH_CMD" \
     --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s \
+    --log-opt max-size=10m --log-opt max-file=3 \
     "$SENTINEL_IMAGE" >/dev/null
+}
+
+recreate_sentinel() {
+  docker rm -f "$SENTINEL_NAME" >/dev/null
+  create_sentinel
+  wait_for_sentinel
 }
 
 ensure_sentinel() {
@@ -368,6 +377,11 @@ ensure_sentinel() {
   if ! sentinel_compatible; then
     echo "ERROR: existing usage-sentinel container is incompatible; inspect and remove it manually before recreating it with the fixed named volumes." >&2
     return 1
+  fi
+  docker pull "$SENTINEL_IMAGE" || echo "WARNING: usage-sentinel pull failed — keeping current image." >&2
+  if [ "$(sentinel_inspect '{{.Image}}')" != "$(docker image inspect --format '{{.Id}}' "$SENTINEL_IMAGE")" ]; then
+    recreate_sentinel
+    return
   fi
   status="$(sentinel_inspect '{{.State.Status}}')"
   health="$(sentinel_inspect '{{if .State.Health}}{{.State.Health.Status}}{{end}}')"
@@ -406,9 +420,7 @@ case "$cmd" in
       exit 1
     fi
     docker pull "$SENTINEL_IMAGE"
-    docker rm -f "$SENTINEL_NAME" >/dev/null
-    create_sentinel
-    wait_for_sentinel
+    recreate_sentinel
     ;;
   shell)
     devcontainer exec --workspace-folder "$ROOT" bash
