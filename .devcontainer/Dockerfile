@@ -42,15 +42,15 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # Issue Orchestrator package produced with `npm pack` from Sadotu/issue-orchestrator
-# commit 6349c83929750b559965fbffb59fcd5eb35d2964 (package version 0.1.0).
-# SHA-256 97b3f3881d1133dd77d8630fae8d5646ebadc819c1c9a805d3a223745cbcb035.
+# commit 0667357e0270c2a400c3173d0104a1add6594180 (package version 0.2.0).
+# SHA-256 8459a92e39d5f7892d8ad5eeb5bcd02b623f943c66c33da7d162fb514fa6164e.
 # Baked-in fallback only, same role as Claude Code/Codex below —
 # setup-agents.sh shadows this at runtime with
 # @nickysagan/issue-orchestrator@latest from npmjs, which needs no credential
 # (Sadotu/issue-orchestrator#81).
 # Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
 # longer gates day-to-day issue-orchestrator freshness.
-COPY vendor/issue-orchestrator-6349c8392975.tgz /opt/agent-devcontainer/vendor/
+COPY vendor/issue-orchestrator-0667357e0270.tgz /opt/agent-devcontainer/vendor/
 
 # Worktree Warden package produced with `npm pack` from Sadotu/worktree-warden
 # commit cfc33558708f4f341d11593fdeb42d7ea3ce701b (package version 0.1.0).
@@ -72,7 +72,7 @@ RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @bitwarden/cli \
-        /opt/agent-devcontainer/vendor/issue-orchestrator-6349c8392975.tgz \
+        /opt/agent-devcontainer/vendor/issue-orchestrator-0667357e0270.tgz \
         /opt/agent-devcontainer/vendor/worktree-warden-cfc33558708f.tgz \
     && npm cache clean --force
 

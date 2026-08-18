@@ -41,6 +41,7 @@ inside the container run `codex login --device-auth`, exit, then on the host run
 ./.devcontainer/dc shell
 start work
 ```
+Usage Sentinel enforces Claude usage limits by pausing the whole container: `start work` prints one pause message before the pause and one resume message after Sentinel unpauses it.
 Common commands:
 
 ```bash
