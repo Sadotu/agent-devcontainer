@@ -436,17 +436,45 @@ echo "==> Self-authored skills (dotagents)"
 # rot after it moved to the github-pr-cleanup skill upstream.
 if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
   # --upgrade above can rewrite agents.lock's resolved_commit pins when an
-  # upstream skill moved, leaving the primary worktree dirty. worktree-warden
-  # refuses to fast-forward local main while it's dirty and never retries, so
-  # a routine pin bump silently wedges it (#79). Auto-commit just that file,
-  # and only on main — a feature branch's dirty lock is left for the user.
+  # upstream skill moved. Committing that onto the primary worktree's main
+  # would leave it dirty; worktree-warden refuses to fast-forward local main
+  # while it's dirty and never retries, so a routine pin bump silently
+  # wedges it (#79). Instead, carry the bump into its own throwaway
+  # worktree/branch, open a PR for the human to review and merge, and
+  # restore the primary worktree's tracked copy — it never stays dirty.
+  # Only when primary is on main — a feature branch's dirty lock is the
+  # user's own in-progress state and is left alone.
   if [ "$(git -C "$WORKSPACE" branch --show-current)" = main ] && \
       ! git -C "$WORKSPACE" diff --quiet -- agents.lock; then
-    git -C "$WORKSPACE" add agents.lock
-    git -C "$WORKSPACE" commit -m "chore: bump agents.lock skill pins (auto, dc up)" \
-      -- agents.lock >/dev/null
-    echo "WARNING: agents.lock changed (skills re-resolved) — auto-committed to local main."
-    echo "         Review with 'git show' and push when ready."
+    bump_branch="agent/agents-lock-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+    bump_lock="$(mktemp)"
+    bump_wt="$(mktemp -d)"
+    rmdir "$bump_wt"
+    cp "$WORKSPACE/agents.lock" "$bump_lock"
+    bump_pr_url=""
+    if git -C "$WORKSPACE" worktree add -q -b "$bump_branch" "$bump_wt" main \
+        >/tmp/agents-lock-bump.log 2>&1 && \
+       cp "$bump_lock" "$bump_wt/agents.lock" && \
+       git -C "$bump_wt" add agents.lock && \
+       git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
+         -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
+         commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
+       git -C "$bump_wt" push -q -u origin "$bump_branch" >>/tmp/agents-lock-bump.log 2>&1; then
+      bump_pr_url="$(GH_TOKEN="$($TOOLDIR/gh-app-token.sh)" gh pr create \
+        --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$bump_branch" \
+        --title "chore: bump agents.lock skill pins" \
+        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh --upgrade\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
+        2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
+    fi
+    git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
+    rm -f "$bump_lock"
+    if [ -n "$bump_pr_url" ]; then
+      echo "WARNING: agents.lock changed (skills re-resolved) — opened $bump_pr_url"
+    else
+      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    fi
+    git -C "$WORKSPACE" checkout -- agents.lock || \
+      echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
   fi
 else
   echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
