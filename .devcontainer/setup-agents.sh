@@ -434,8 +434,23 @@ echo "==> Self-authored skills (dotagents)"
 # @latest installs below) instead of replaying agents.lock's pinned commit
 # forever — a stale pin is what let github-issue's Phase 7 script silently
 # rot after it moved to the github-pr-cleanup skill upstream.
-($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /') || \
+if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
+  # --upgrade above can rewrite agents.lock's resolved_commit pins when an
+  # upstream skill moved, leaving the primary worktree dirty. worktree-warden
+  # refuses to fast-forward local main while it's dirty and never retries, so
+  # a routine pin bump silently wedges it (#79). Auto-commit just that file,
+  # and only on main — a feature branch's dirty lock is left for the user.
+  if [ "$(git -C "$WORKSPACE" branch --show-current)" = main ] && \
+      ! git -C "$WORKSPACE" diff --quiet -- agents.lock; then
+    git -C "$WORKSPACE" add agents.lock
+    git -C "$WORKSPACE" commit -m "chore: bump agents.lock skill pins (auto, dc up)" \
+      -- agents.lock >/dev/null
+    echo "WARNING: agents.lock changed (skills re-resolved) — auto-committed to local main."
+    echo "         Review with 'git show' and push when ready."
+  fi
+else
   echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
+fi
 
 echo "==> Codex plugins/skills"
 # Codex reserves the marketplace name "openai-curated" (what openai/plugins'

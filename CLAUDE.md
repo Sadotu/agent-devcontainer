@@ -95,6 +95,14 @@ When running **inside the container** (workspace mounted at
   `path` field. Its YAML frontmatter parser also rejects an unquoted
   `description:` value containing a mid-string `: ` (colon+space) — quote
   the value. Both hit migrating `github-issue` into `Sadotu/agent-skills`.
+- `dotagents-install.sh --upgrade` (run on every `dc up`, see above) can
+  rewrite `agents.lock`'s `resolved_commit` pins whenever an upstream skill
+  moved, leaving the primary worktree dirty. worktree-warden refuses to
+  fast-forward local `main` while it's dirty and never retries, so a routine
+  pin bump silently wedged it (#79) until a human noticed and cleaned the
+  tree by hand. `setup-agents.sh` now auto-commits a resulting `agents.lock`
+  change — scoped to that one file, and only when the primary worktree is on
+  `main` — and prints a WARNING naming the auto-commit so it's never silent.
 - Bitwarden auto-login (`setup-agents.sh`): the GitHub App key, the Claude
   OAuth token, and the Codex auth each need the vault unlocked, but only ONE
   unlock should happen. They call a shared idempotent `ensure_bw_session`
