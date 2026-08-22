@@ -423,24 +423,36 @@ else
 fi
 
 echo "==> Claude Code plugins/skills"
-# `claude plugin marketplace add` / `claude plugin install` are safe to re-run —
-# an already-added marketplace or already-installed plugin just no-ops.
+# `marketplace add` / `plugin install` are safe to re-run, but they only ever
+# create: an already-added marketplace or already-installed plugin just no-ops,
+# so neither ever fetches a newer release. `marketplace update` / `plugin
+# update` are the verbs that advance an existing install, and both exit 0 with
+# "already at the latest version" when there is nothing to do. `add` has to
+# stay and run first — `marketplace update` on a never-added name fails.
 claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || true
+claude plugin marketplace update superpowers-marketplace 2>&1 | sed 's/^/    /' || true
 claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
+claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
 claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || true
 claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || true
+# `plugin list` is an explicit read-only subcommand — never probe a version by
+# invoking the plugin itself (see the issue-orchestrator note above).
+sp_claude_version="$(claude plugin list --json 2>/dev/null \
+  | jq -r '.[] | select(.id == "superpowers@superpowers-marketplace") | .version' 2>/dev/null || true)"
+echo "    superpowers (Claude): ${sp_claude_version:-unknown}"
 
 echo "==> Self-authored skills (dotagents)"
 # Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
 # distributed via dotagents instead of a per-repo file copy — one command
 # symlinks each skill into every tool's expected location (.claude/skills/,
-# Codex's .agents/skills/, ...). --upgrade re-resolves every skill to its
+# Codex's .agents/skills/, ...). Install re-resolves every skill to its
 # source's latest commit on every dc up (like issue-orchestrator/worktree-warden's
 # @latest installs below) instead of replaying agents.lock's pinned commit
 # forever — a stale pin is what let github-issue's Phase 7 script silently
-# rot after it moved to the github-pr-cleanup skill upstream.
-if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
-  # --upgrade above can rewrite agents.lock's resolved_commit pins when an
+# rot after it moved to the github-pr-cleanup skill upstream. --project scopes
+# the install to this workspace instead of dotagents' default global state.
+if ($TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
+  # Install above can rewrite agents.lock's resolved_commit pins when an
   # upstream skill moved. Committing that onto the primary worktree's main
   # would leave it dirty; worktree-warden refuses to fast-forward local main
   # while it's dirty and never retries, so a routine pin bump silently
@@ -468,7 +480,7 @@ if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed '
       bump_pr_url="$(GH_TOKEN="$($TOOLDIR/gh-app-token.sh)" gh pr create \
         --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$bump_branch" \
         --title "chore: bump agents.lock skill pins" \
-        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh --upgrade\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
+        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
         2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
     fi
     git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
@@ -491,14 +503,23 @@ echo "==> Codex plugins/skills"
 # just the superpowers plugin into a local marketplace dir under a different
 # name. Manifest path/shape: <root>/.agents/plugins/marketplace.json, plugin
 # content under <root>/plugins/<name>/.
+#
+# Re-download on every run rather than only when the directory is missing:
+# `codex plugin marketplace upgrade` refreshes *Git* marketplace snapshots
+# only, and this one is local by necessity, so nothing else would ever advance
+# it — and ~/.codex persists across rebuilds, which is how Codex stayed pinned
+# to whatever version landed first. Stage the new tree beside the live one and
+# swap, so a failed download leaves the working copy untouched and content
+# deleted upstream does not linger in a "refreshed" install.
 CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
-if [ ! -d "$CODEX_SP_DIR" ]; then
-  tmp_clone="$(mktemp -d)"
-  if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
-      >/tmp/codex-superpowers-clone.log 2>&1; then
-    mkdir -p "$CODEX_SP_DIR/plugins/superpowers" "$CODEX_SP_DIR/.agents/plugins"
-    cp -r "$tmp_clone/plugins/superpowers/." "$CODEX_SP_DIR/plugins/superpowers/"
-    cat > "$CODEX_SP_DIR/.agents/plugins/marketplace.json" <<'JSON'
+tmp_clone="$(mktemp -d)"
+if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
+    >/tmp/codex-superpowers-clone.log 2>&1; then
+  codex_sp_staged="$CODEX_SP_DIR.staged"
+  rm -rf "$codex_sp_staged"
+  mkdir -p "$codex_sp_staged/plugins/superpowers" "$codex_sp_staged/.agents/plugins"
+  cp -r "$tmp_clone/plugins/superpowers/." "$codex_sp_staged/plugins/superpowers/"
+  cat > "$codex_sp_staged/.agents/plugins/marketplace.json" <<'JSON'
 {
   "name": "superpowers-curated",
   "interface": { "displayName": "Superpowers (official plugin, local marketplace)" },
@@ -512,16 +533,23 @@ if [ ! -d "$CODEX_SP_DIR" ]; then
   ]
 }
 JSON
-  else
-    echo "WARNING: failed to clone openai/plugins for Codex superpowers."
-    echo "         See /tmp/codex-superpowers-clone.log for details."
-  fi
-  rm -rf "$tmp_clone"
+  rm -rf "$CODEX_SP_DIR"
+  mv "$codex_sp_staged" "$CODEX_SP_DIR"
+else
+  echo "WARNING: failed to clone openai/plugins for Codex superpowers."
+  echo "         See /tmp/codex-superpowers-clone.log for details."
+  echo "         Keeping the Codex superpowers copy already on disk, if any."
 fi
+rm -rf "$tmp_clone"
 if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
+  # Re-running both is what advances the installed copy: `marketplace add`
+  # re-reads the refreshed root, `plugin add` reinstalls the plugin from it.
   codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || true
   codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
 fi
+codex_sp_version="$(codex plugin list --json 2>/dev/null \
+  | jq -r '.installed[] | select(.pluginId == "superpowers@superpowers-curated") | .version' 2>/dev/null || true)"
+echo "    superpowers (Codex): ${codex_sp_version:-unknown}"
 
 # Caveman for Codex: no plugin install needed — the skill files live in the
 # workspace's own .agents/skills/caveman* (Codex reads .agents/skills/

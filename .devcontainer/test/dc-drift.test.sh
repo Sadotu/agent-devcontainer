@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Covers `dc`'s drift detection against the canonical baked template:
-# the passive warning on `up`, and the `self-update` subcommand.
+# Covers `dc`'s configuration-drift handling on a consumer project:
+# drift of the project's `dc` against the canonical baked template (the
+# passive warning on `up`, and the `self-update` subcommand), and drift of
+# the project's devcontainer.json against the required worktree-warden
+# `postStartCommand` lifecycle hook (auto-migrated on `up`).
 #
 # Runs the real `dc` inside a throwaway fake project (image-based
 # devcontainer.json) with `docker`/`devcontainer` stubbed on PATH. The stub's
@@ -34,7 +37,11 @@ reset_proj() { # <image-based|build-based>
 EOF
   else
     cat >"$PROJ/.devcontainer/devcontainer.json" <<'EOF'
-{ "image": "fake/img:latest" }
+{
+  "image": "fake/img:latest",
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh"
+}
 EOF
   fi
 }
@@ -162,4 +169,94 @@ run_dc up
 echo "$ERR" | grep -qi 'self-update' && fail "up warned about drift when in sync"
 export FAKE_CANONICAL="$PRISTINE"
 
-echo "PASS: dc drift detection + self-update"
+# --- up: worktree-warden postStartCommand hook ------------------------------
+# A project scaffolded before the hook existed keeps a devcontainer.json
+# without it, so a newer image installs worktree-warden but nothing runs it.
+DEVJSON="$PROJ/.devcontainer/devcontainer.json"
+HOOK='"postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh"'
+
+valid_json() { python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$1"; }
+
+# stale consumer: hook added, existing keys and validity preserved
+reset_proj image-based
+cat >"$DEVJSON" <<'EOF'
+{
+  "image": "fake/img:latest",
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "remoteUser": "vscode"
+}
+EOF
+run_dc up
+[ "$RC" -eq 0 ] || fail "up on a stale consumer exited $RC: $ERR"
+grep -Fq "$HOOK" "$DEVJSON" || fail "up did not add the hook to a stale consumer"
+valid_json "$DEVJSON" || fail "migrated devcontainer.json is not valid JSON"
+grep -q '"remoteUser"' "$DEVJSON" || fail "migration dropped an existing key"
+printf '%s\n%s\n' "$OUT" "$ERR" | grep -q 'postStartCommand' || fail "migration was silent"
+
+# ...and re-running up is a no-op, not a second hook
+before="$(cat "$DEVJSON")"
+run_dc up
+[ "$(cat "$DEVJSON")" = "$before" ] || fail "second up re-edited an already-migrated file"
+[ "$(grep -c 'postStartCommand' "$DEVJSON")" -eq 1 ] || fail "second up duplicated the hook"
+
+# anchor is the last key: needs a comma appended to it
+reset_proj image-based
+cat >"$DEVJSON" <<'EOF'
+{
+  "image": "fake/img:latest",
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh"
+}
+EOF
+run_dc up
+[ "$RC" -eq 0 ] || fail "up on a last-key anchor exited $RC: $ERR"
+grep -Fq "$HOOK" "$DEVJSON" || fail "up did not add the hook after a last-key anchor"
+valid_json "$DEVJSON" || fail "last-key migration produced invalid JSON"
+
+# already-current consumer: untouched, and no hook warning
+reset_proj image-based
+export FAKE_CANONICAL="$PROJ_DC"
+before="$(cat "$DEVJSON")"
+run_dc up
+[ "$RC" -eq 0 ] || fail "up on a current consumer exited $RC: $ERR"
+[ "$(cat "$DEVJSON")" = "$before" ] || fail "up edited an already-current devcontainer.json"
+printf '%s\n%s\n' "$OUT" "$ERR" | grep -q 'postStartCommand' && fail "up warned about a current consumer"
+export FAKE_CANONICAL="$PRISTINE"
+
+# conflicting postStartCommand: never clobbered, warned instead
+reset_proj image-based
+cat >"$DEVJSON" <<'EOF'
+{
+  "image": "fake/img:latest",
+  "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
+  "postStartCommand": "/opt/local/my-own-hook.sh"
+}
+EOF
+before="$(cat "$DEVJSON")"
+run_dc up
+[ "$RC" -eq 0 ] || fail "up on a conflicting hook exited $RC: $ERR"
+[ "$(cat "$DEVJSON")" = "$before" ] || fail "up clobbered a project's own postStartCommand"
+echo "$ERR" | grep -Fq '/opt/agent-devcontainer/start-worktree-warden.sh' || fail "conflict warning omits the required hook"
+
+# no postCreateCommand to anchor to: left alone, warned instead
+reset_proj image-based
+cat >"$DEVJSON" <<'EOF'
+{ "image": "fake/img:latest" }
+EOF
+before="$(cat "$DEVJSON")"
+run_dc up
+[ "$RC" -eq 0 ] || fail "up without an anchor exited $RC: $ERR"
+[ "$(cat "$DEVJSON")" = "$before" ] || fail "up edited a file with no anchor line"
+echo "$ERR" | grep -Fq '/opt/agent-devcontainer/start-worktree-warden.sh' || fail "no-anchor warning omits the required hook"
+
+# anchor shares its line with the closing brace: not safely splittable
+reset_proj image-based
+cat >"$DEVJSON" <<'EOF'
+{ "image": "fake/img:latest", "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh" }
+EOF
+before="$(cat "$DEVJSON")"
+run_dc up
+[ "$RC" -eq 0 ] || fail "up on a single-line config exited $RC: $ERR"
+[ "$(cat "$DEVJSON")" = "$before" ] || fail "up edited a single-line config it cannot split safely"
+echo "$ERR" | grep -Fq '/opt/agent-devcontainer/start-worktree-warden.sh' || fail "single-line warning omits the required hook"
+
+echo "PASS: dc drift detection + self-update + worktree-warden hook migration"

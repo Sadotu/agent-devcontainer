@@ -241,6 +241,76 @@ self_update_dc() {
   echo "Updated .devcontainer/dc from $image (previous copy saved as dc.bak)."
 }
 
+# The lifecycle hook that autostarts Worktree Warden. The script it names is
+# baked into the image; the hook that runs it lives in each project's own
+# checked-in devcontainer.json. A project scaffolded before the hook was added
+# upstream keeps its old config, so pulling a newer image installs the watcher
+# but nothing ever starts it — merged PRs silently stop being cleaned up.
+WARDEN_HOOK_SCRIPT="/opt/agent-devcontainer/start-worktree-warden.sh"
+
+# Add the hook to the project's devcontainer.json when it is missing. This is a
+# targeted line insertion, not a JSON round-trip: devcontainer.json is a
+# checked-in, project-owned JSONC file (comments and trailing commas are legal
+# there), so parsing and re-serialising it would strip comments and reformat
+# every untouched line. It anchors on the "postCreateCommand" line — present in
+# every scaffolded project, and where the template already puts the two
+# lifecycle hooks side by side. Anything it cannot place unambiguously (a
+# different postStartCommand, no anchor line, an anchor sharing its line with
+# other syntax) is left untouched and warned about with the exact line to add.
+# Never fatal: a missing watcher does not stop the container coming up.
+ensure_warden_hook() {
+  local file="$ROOT/.devcontainer/devcontainer.json" hook current tmp
+  hook="\"postStartCommand\": \"$WARDEN_HOOK_SCRIPT\""
+
+  if [ ! -r "$file" ]; then
+    echo "WARNING: cannot read $file — skipping the worktree-warden hook check." >&2
+    return
+  fi
+
+  if grep -q '"postStartCommand"[[:space:]]*:' "$file"; then
+    current="$(sed -n 's/.*"postStartCommand"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
+    [ "$current" = "$WARDEN_HOOK_SCRIPT" ] && return
+    echo "WARNING: .devcontainer/devcontainer.json already sets a different \"postStartCommand\";" >&2
+    echo "         leaving it alone. Worktree Warden will NOT autostart until it runs" >&2
+    echo "         $WARDEN_HOOK_SCRIPT — merge it into your hook, or replace the line with:" >&2
+    echo "           $hook" >&2
+    return
+  fi
+
+  tmp="$(mktemp)"
+  # Exit 3 = no usable anchor line; the file is then left untouched.
+  if awk -v hook="$hook" '
+    !done && /"postCreateCommand"[[:space:]]*:/ {
+      line = $0
+      sub(/[ \t\r]+$/, "", line)
+      indent = line
+      sub(/[^ \t].*$/, "", indent)
+      if (line ~ /,$/)      { print line;       print indent hook "," }
+      else if (line ~ /"$/) { print line ",";   print indent hook }
+      else                  { exit 3 }
+      done = 1
+      next
+    }
+    { print }
+    END { if (!done) exit 3 }
+  ' "$file" >"$tmp"; then
+    # Rewrite in place rather than mv the temp over it: the file lives on a
+    # host bind mount, and replacing the inode would hand it mktemp's 0600
+    # and this shell's ownership instead of the project's.
+    cat -- "$tmp" >"$file"
+    rm -f -- "$tmp"
+    echo "Added the missing Worktree Warden hook to .devcontainer/devcontainer.json:"
+    echo "  $hook"
+    echo "Commit it so the project keeps the hook."
+  else
+    rm -f -- "$tmp"
+    echo "WARNING: .devcontainer/devcontainer.json has no \"postStartCommand\" and no" >&2
+    echo "         \"postCreateCommand\" line to add it after, so it was left untouched." >&2
+    echo "         Worktree Warden will NOT autostart. Add this key to the top-level object:" >&2
+    echo "           $hook" >&2
+  fi
+}
+
 SENTINEL_NAME="usage-sentinel"
 SENTINEL_IMAGE="ghcr.io/sadotu/usage-sentinel:latest"
 SENTINEL_NETWORK="agent-services"
@@ -404,6 +474,7 @@ case "$cmd" in
     ensure_sentinel
     pull_image
     warn_if_dc_drifted
+    ensure_warden_hook
     devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
     ;;
   self-update)

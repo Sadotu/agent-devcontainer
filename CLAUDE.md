@@ -109,6 +109,17 @@ When running **inside the container** (workspace mounted at
   `~/.claude/settings.json` (every run) and strips
   `[mcp_servers.*github*]` from Codex `config.toml`. Needs `dc up`, baked
   into image.
+- Sentinel pause/resume (#78): two-package protocol — Sentinel (>=
+  `300c65c0`) flips a managed-container lease to `pause_pending`, waits up
+  to 30s for `POST /managed-containers/:id/acknowledge` before pausing;
+  `@nickysagan/issue-orchestrator` >= 0.2.0 prints the pre-pause message,
+  flushes it, acknowledges, then prints the resume message when the lease
+  returns to `running`. **Live end-to-end smoke test can't run from inside
+  the project container**: no docker socket is mounted (`dc-sentinel.test.sh`
+  forbids mounting one), a paused container can't clear its own
+  `/_smoke/usage/claude-code` override, and `dc create_sentinel` never sets
+  `USAGE_SENTINEL_SMOKE_TOKEN` (endpoint 404s). Force the threshold, watch
+  `docker pause`/`unpause`, clear the override from the host.
 
 ### GitHub App auth
 
