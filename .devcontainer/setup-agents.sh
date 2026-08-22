@@ -445,13 +445,14 @@ echo "==> Self-authored skills (dotagents)"
 # Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
 # distributed via dotagents instead of a per-repo file copy — one command
 # symlinks each skill into every tool's expected location (.claude/skills/,
-# Codex's .agents/skills/, ...). --upgrade re-resolves every skill to its
+# Codex's .agents/skills/, ...). Install re-resolves every skill to its
 # source's latest commit on every dc up (like issue-orchestrator/worktree-warden's
 # @latest installs below) instead of replaying agents.lock's pinned commit
 # forever — a stale pin is what let github-issue's Phase 7 script silently
-# rot after it moved to the github-pr-cleanup skill upstream.
-if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
-  # --upgrade above can rewrite agents.lock's resolved_commit pins when an
+# rot after it moved to the github-pr-cleanup skill upstream. --project scopes
+# the install to this workspace instead of dotagents' default global state.
+if ($TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
+  # Install above can rewrite agents.lock's resolved_commit pins when an
   # upstream skill moved. Committing that onto the primary worktree's main
   # would leave it dirty; worktree-warden refuses to fast-forward local main
   # while it's dirty and never retries, so a routine pin bump silently
@@ -479,7 +480,7 @@ if ($TOOLDIR/dotagents-install.sh --upgrade "$WORKSPACE" "$TOOLDIR" 2>&1 | sed '
       bump_pr_url="$(GH_TOKEN="$($TOOLDIR/gh-app-token.sh)" gh pr create \
         --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$bump_branch" \
         --title "chore: bump agents.lock skill pins" \
-        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh --upgrade\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
+        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
         2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
     fi
     git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
