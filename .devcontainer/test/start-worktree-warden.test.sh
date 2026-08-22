@@ -63,6 +63,17 @@ exit 0
 EOF
 chmod +x "$STUB_DIR/worktree-warden"
 
+# refresh-skills.sh's own behavior (issue #92) is covered end-to-end by
+# refresh-skills.test.sh — here a stub just proves start-worktree-warden.sh
+# calls it, via TOOLDIR, after the warden autostart above.
+REFRESH_LOG="$TMP/refresh.log"
+cat > "$STUB_DIR/refresh-skills.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "called" >> "$REFRESH_LOG"
+exit 0
+EOF
+chmod +x "$STUB_DIR/refresh-skills.sh"
+
 STUB_PATH="$STUB_DIR:$PATH"
 WORKSPACE_DIR="$TMP/ws"
 mkdir -p "$WORKSPACE_DIR"
@@ -82,6 +93,11 @@ new_session_count() {
   grep -c '^new-session' "$TMUX_LOG" || true
 }
 
+refresh_call_count() {
+  [[ -f $REFRESH_LOG ]] || { printf '0'; return; }
+  grep -c '^called' "$REFRESH_LOG" || true
+}
+
 # run_script MARKER HOME PATH_VALUE
 # Sets exit status in $STATUS, output in $TMP/out.log.
 run_script() {
@@ -91,6 +107,7 @@ run_script() {
     TMUX_NEWSESSION_FAIL_FLAG="$NEWSESSION_FAIL_FLAG" \
     TMUX_NEWSESSION_CRASH_FLAG="$NEWSESSION_CRASH_FLAG" \
     AGENT_SETUP_MARKER="$marker" HOME="$home_dir" WORKSPACE="$WORKSPACE_DIR" \
+    TOOLDIR="$STUB_DIR" REFRESH_LOG="$REFRESH_LOG" \
     PATH="$path_value" \
     bash "$SCRIPT" > "$TMP/out.log" 2>&1
   STATUS=$?
@@ -102,18 +119,19 @@ run_script() {
 # Must short-circuit before ever touching tmux -> zero new-session calls,
 # and per the spec, ideally zero tmux invocations of any kind.
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 CASE1_HOME="$TMP/case1-home"
 setup_creds "$CASE1_HOME"
 run_script "$TMP/case1/no-such-marker" "$CASE1_HOME" "$STUB_PATH"
 [[ $STATUS -eq 0 ]] || fail "case 1: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 0 ]] || fail "case 1: expected zero new-session calls"
 [[ -f $TMUX_LOG ]] && fail "case 1: expected zero tmux invocations at all (marker check should short-circuit first)"
+[[ "$(refresh_call_count)" -eq 0 ]] || fail "case 1: expected refresh-skills.sh to not be called (marker check should short-circuit first)"
 
 # =========================================================================
 # Case 2: marker present, but GitHub App creds missing/incomplete.
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 CASE2_MARKER="$TMP/case2/marker"
 mkdir -p "$(dirname "$CASE2_MARKER")"
 printf 'agent-setup-complete\n' > "$CASE2_MARKER"
@@ -122,11 +140,15 @@ mkdir -p "$CASE2_HOME"
 run_script "$CASE2_MARKER" "$CASE2_HOME" "$STUB_PATH"
 [[ $STATUS -eq 0 ]] || fail "case 2: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 0 ]] || fail "case 2: expected zero new-session calls"
+# Missing GitHub App creds only gate the warden itself -- skill refresh's
+# core resolve step needs neither creds nor the warden CLI, only its own
+# optional bump-PR path does, which degrades on its own without them.
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 2: expected refresh-skills.sh to still be called despite missing App creds, got $(refresh_call_count)"
 
 # =========================================================================
 # Case 3: marker present, App creds present, worktree-warden NOT on PATH.
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 CASE3_MARKER="$TMP/case3/marker"
 mkdir -p "$(dirname "$CASE3_MARKER")"
 printf 'agent-setup-complete\n' > "$CASE3_MARKER"
@@ -136,12 +158,14 @@ setup_creds "$CASE3_HOME"
 run_script "$CASE3_MARKER" "$CASE3_HOME" "$PATH"
 [[ $STATUS -eq 0 ]] || fail "case 3: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 0 ]] || fail "case 3: expected zero new-session calls"
+# The warden CLI being missing only gates the warden itself, not the refresh.
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 3: expected refresh-skills.sh to still be called despite the warden CLI missing, got $(refresh_call_count)"
 
 # =========================================================================
 # Case 4: everything present, no existing tmux session -> exactly one
 # new-session call, including -s worktree-warden and -c "$WORKSPACE".
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 CASE4_MARKER="$TMP/case4/marker"
 mkdir -p "$(dirname "$CASE4_MARKER")"
 printf 'agent-setup-complete\n' > "$CASE4_MARKER"
@@ -165,12 +189,15 @@ grep -Fq -- 'worktree-warden/warden.log' <<<"$new_session_line" || fail "case 4:
 # post-launch crash-recheck branch (the stub's new-session touches
 # SESSION_FLAG on a normal success, which the recheck must see).
 grep -Fq -- "started in tmux session" "$TMP/out.log" || fail "case 4: expected a success message, got: $(cat "$TMP/out.log")"
+# refresh-skills.sh (issue #92) must run exactly once after the warden
+# autostart above (it's called as the script's last step, source-order).
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 4: expected refresh-skills.sh to be called exactly once, got $(refresh_call_count)"
 
 # =========================================================================
 # Case 5: same as case 4 but a session already exists -> zero new-session
 # calls (dedup / primary duplicate-prevention layer).
 # =========================================================================
-rm -f "$TMUX_LOG"
+rm -f "$TMUX_LOG" "$REFRESH_LOG"
 touch "$SESSION_FLAG"
 CASE5_MARKER="$TMP/case5/marker"
 mkdir -p "$(dirname "$CASE5_MARKER")"
@@ -180,6 +207,8 @@ setup_creds "$CASE5_HOME"
 run_script "$CASE5_MARKER" "$CASE5_HOME" "$STUB_PATH"
 [[ $STATUS -eq 0 ]] || fail "case 5: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 0 ]] || fail "case 5: expected zero new-session calls (session already exists)"
+# An existing warden session only gates re-starting the warden, not refresh.
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 5: expected refresh-skills.sh to still be called despite an existing session, got $(refresh_call_count)"
 rm -f "$SESSION_FLAG"
 
 # =========================================================================
@@ -188,7 +217,7 @@ rm -f "$SESSION_FLAG"
 # itself rather than relying on postStartCommand's non-interactive process
 # to have sourced .bashrc (it never does).
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 CASE6_MARKER="$TMP/case6/marker"
 mkdir -p "$(dirname "$CASE6_MARKER")"
 printf 'agent-setup-complete\n' > "$CASE6_MARKER"
@@ -215,13 +244,14 @@ run_script "$CASE6_MARKER" "$CASE6_HOME" "$STUB_PATH_NO_WW"
 [[ $STATUS -eq 0 ]] || fail "case 6: script exited $STATUS, expected 0. Output: $(cat "$TMP/out.log")"
 [[ "$(new_session_count)" -eq 1 ]] || fail "case 6: expected exactly one new-session call (worktree-warden should resolve via \$HOME/.npm-global/bin), got $(new_session_count). Output: $(cat "$TMP/out.log")"
 grep -Fq -- "started in tmux session" "$TMP/out.log" || fail "case 6: expected a success message, got: $(cat "$TMP/out.log")"
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 6: expected refresh-skills.sh to be called exactly once, got $(refresh_call_count)"
 
 # =========================================================================
 # Case 7: tmux new-session itself fails (e.g. tmux server unreachable).
 # Must still exit 0 (never block postStartCommand / container entry) but
 # must NOT claim success, and must say something is wrong.
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 touch "$NEWSESSION_FAIL_FLAG"
 CASE7_MARKER="$TMP/case7/marker"
 mkdir -p "$(dirname "$CASE7_MARKER")"
@@ -233,6 +263,10 @@ run_script "$CASE7_MARKER" "$CASE7_HOME" "$STUB_PATH"
 out="$(cat "$TMP/out.log")"
 [[ "$out" != *"started in tmux session"* ]] || fail "case 7: falsely claimed success despite tmux new-session failing: $out"
 [[ "$out" == *"failed to start"* ]] || fail "case 7: expected a failure message when tmux new-session fails, got: $out"
+# A failed warden autostart must still reach and run refresh-skills.sh —
+# acceptance criterion: "worktree-warden still autostarts when the refresh
+# is slow or fails" implies the converse too, a failed warden never blocks it.
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 7: expected refresh-skills.sh to still be called despite tmux failing, got $(refresh_call_count)"
 rm -f "$NEWSESSION_FAIL_FLAG"
 
 # =========================================================================
@@ -243,7 +277,7 @@ rm -f "$NEWSESSION_FAIL_FLAG"
 # (`exit "$status"` at the end of the wrapper instead of ending on `kill`)
 # is what makes this distinguishable from a clean run in the first place.
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
 touch "$NEWSESSION_CRASH_FLAG"
 CASE8_MARKER="$TMP/case8/marker"
 mkdir -p "$(dirname "$CASE8_MARKER")"
@@ -257,6 +291,7 @@ out="$(cat "$TMP/out.log")"
 [[ "$out" != *"started in tmux session"* ]] || fail "case 8: falsely claimed success despite the session dying immediately: $out"
 [[ "$out" == *"crashed on startup"* ]] || fail "case 8: expected a crash message when the session dies immediately after new-session succeeds, got: $out"
 [[ "$out" != *"failed to start tmux session"* ]] || fail "case 8: wrong branch -- this is new-session succeeding then the pane dying, not new-session itself failing: $out"
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 8: expected refresh-skills.sh to still be called despite the pane crashing, got $(refresh_call_count)"
 rm -f "$NEWSESSION_CRASH_FLAG"
 
 echo "PASS: start-worktree-warden.test.sh"

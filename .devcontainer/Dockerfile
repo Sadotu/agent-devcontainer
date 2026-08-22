@@ -100,7 +100,7 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
-        codex-auth-sync.sh dotagents-install.sh \
+        codex-auth-sync.sh dotagents-install.sh refresh-skills.sh \
         start-worktree-warden.sh worktree-warden-summary.sh \
         /opt/agent-devcontainer/
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
@@ -119,6 +119,7 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/codex-auth-sync.sh \
         /opt/agent-devcontainer/dotagents-install.sh \
+        /opt/agent-devcontainer/refresh-skills.sh \
         /opt/agent-devcontainer/start-worktree-warden.sh \
         /opt/agent-devcontainer/worktree-warden-summary.sh \
         /opt/agent-devcontainer/githooks/pre-push

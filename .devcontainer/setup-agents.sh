@@ -441,61 +441,19 @@ sp_claude_version="$(claude plugin list --json 2>/dev/null \
   | jq -r '.[] | select(.id == "superpowers@superpowers-marketplace") | .version' 2>/dev/null || true)"
 echo "    superpowers (Claude): ${sp_claude_version:-unknown}"
 
-echo "==> Self-authored skills (dotagents)"
 # Self-authored skills (github-issue, etc.) live in Sadotu/agent-skills and are
 # distributed via dotagents instead of a per-repo file copy — one command
 # symlinks each skill into every tool's expected location (.claude/skills/,
-# Codex's .agents/skills/, ...). Install re-resolves every skill to its
-# source's latest commit on every dc up (like issue-orchestrator/worktree-warden's
+# Codex's .agents/skills/, ...). refresh-skills.sh re-resolves every skill to
+# its source's latest commit (like issue-orchestrator/worktree-warden's
 # @latest installs below) instead of replaying agents.lock's pinned commit
 # forever — a stale pin is what let github-issue's Phase 7 script silently
-# rot after it moved to the github-pr-cleanup skill upstream. --project scopes
-# the install to this workspace instead of dotagents' default global state.
-if ($TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'); then
-  # Install above can rewrite agents.lock's resolved_commit pins when an
-  # upstream skill moved. Committing that onto the primary worktree's main
-  # would leave it dirty; worktree-warden refuses to fast-forward local main
-  # while it's dirty and never retries, so a routine pin bump silently
-  # wedges it (#79). Instead, carry the bump into its own throwaway
-  # worktree/branch, open a PR for the human to review and merge, and
-  # restore the primary worktree's tracked copy — it never stays dirty.
-  # Only when primary is on main — a feature branch's dirty lock is the
-  # user's own in-progress state and is left alone.
-  if [ "$(git -C "$WORKSPACE" branch --show-current)" = main ] && \
-      ! git -C "$WORKSPACE" diff --quiet -- agents.lock; then
-    bump_branch="agent/agents-lock-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
-    bump_lock="$(mktemp)"
-    bump_wt="$(mktemp -d)"
-    rmdir "$bump_wt"
-    cp "$WORKSPACE/agents.lock" "$bump_lock"
-    bump_pr_url=""
-    if git -C "$WORKSPACE" worktree add -q -b "$bump_branch" "$bump_wt" main \
-        >/tmp/agents-lock-bump.log 2>&1 && \
-       cp "$bump_lock" "$bump_wt/agents.lock" && \
-       git -C "$bump_wt" add agents.lock && \
-       git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
-         -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
-         commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
-       git -C "$bump_wt" push -q -u origin "$bump_branch" >>/tmp/agents-lock-bump.log 2>&1; then
-      bump_pr_url="$(GH_TOKEN="$($TOOLDIR/gh-app-token.sh)" gh pr create \
-        --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$bump_branch" \
-        --title "chore: bump agents.lock skill pins" \
-        --body "Automated \`agents.lock\` pin bump from \`dotagents-install.sh\` during \`dc up\` — skills re-resolved to their source's latest commit. Review the diff before merging." \
-        2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
-    fi
-    git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
-    rm -f "$bump_lock"
-    if [ -n "$bump_pr_url" ]; then
-      echo "WARNING: agents.lock changed (skills re-resolved) — opened $bump_pr_url"
-    else
-      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
-    fi
-    git -C "$WORKSPACE" checkout -- agents.lock || \
-      echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
-  fi
-else
-  echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
-fi
+# rot after it moved to the github-pr-cleanup skill upstream. It's a separate
+# script (not inlined here) so start-worktree-warden.sh's postStart can call
+# the exact same logic on every container start, not just create (#92).
+WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
+  GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
+  "$TOOLDIR/refresh-skills.sh"
 
 echo "==> Codex plugins/skills"
 # Codex reserves the marketplace name "openai-curated" (what openai/plugins'

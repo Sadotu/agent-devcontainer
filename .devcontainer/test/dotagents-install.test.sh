@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HELPER="$ROOT/.devcontainer/dotagents-install.sh"
-SETUP="$ROOT/.devcontainer/setup-agents.sh"
+REFRESH="$ROOT/.devcontainer/refresh-skills.sh"
 DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
 LOCK="$ROOT/agents.lock"
 GITIGNORE="$ROOT/.gitignore"
@@ -37,8 +37,10 @@ git -C "$ROOT" ls-files --error-unmatch agents.lock >/dev/null 2>&1 || \
   fail "agents.lock is not tracked"
 assert_file_not_contains '/agents.lock' "$GITIGNORE"
 
-# Runtime setup and image build must both integrate the locked installer.
-assert_file_contains '$TOOLDIR/dotagents-install.sh "$WORKSPACE" "$TOOLDIR"' "$SETUP"
+# Runtime setup (via refresh-skills.sh, called from both postCreate and
+# postStart — see issue #92) and image build must both integrate the locked
+# installer.
+assert_file_contains '"$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"' "$REFRESH"
 assert_file_contains 'dotagents-install.sh \' "$DOCKERFILE"
 assert_file_contains '/opt/agent-devcontainer/dotagents-install.sh \' "$DOCKERFILE"
 
