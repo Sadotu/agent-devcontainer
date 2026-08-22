@@ -23,175 +23,103 @@ When running **inside the container** (workspace mounted at
 - Skills: `.agents/skills/<name>/SKILL.md`. See `.agents/skills/README.md`.
 
 ### Devcontainer Gotchas
-- Codex shell commands (`cd`, `grep`, etc.) fail with `bwrap: No permissions
-  to create a new namespace` when its alias uses `--sandbox workspace-write`.
-  Docker's default seccomp profile blocks the unprivileged user-namespace
-  syscall bwrap needs. Fix: use `--sandbox danger-full-access` — the
-  devcontainer's workspace-only bind mount is already the sandbox boundary,
-  so Codex's inner bwrap sandbox is redundant. See `.devcontainer/setup-agents.sh`
-  `cx`/`cx-auto` aliases.
-- `<project>-github-app-config` volume mounts root-owned on first use,
-  same as the other named volumes — but was missing from the `chown -R` list
-  in `setup-agents.sh`, so `vscode` couldn't write `app-id`/`private-key.pem`
-  into it. `sudo` is blocked by `no-new-privileges`, so there's no in-container
-  workaround. Fixed by adding `$HOME/.config/github-app` to the chown list
-  (setup-agents.sh line ~12).
-- `dc` is host-side (invokes `devcontainer up` to *create* the container in
-  the first place), so at *runtime* it can't be one of the image-baked
-  `.devcontainer/` scripts — it has to already exist in the project repo
-  before any image is pulled. It's still a per-project file, same tier as
-  `devcontainer.json`. It IS, however, baked into the image as a *template*
-  (`/opt/agent-devcontainer/templates/dc`) that the `init` scaffolder emits
-  into a new project — that makes the image the single source of truth and
-  kills the old "copy `dc` verbatim" drift, without changing that `dc` runs
-  host-side. `dc` is project-agnostic (derives PROJECT_NAME from the repo
-  dir name), so the baked template is byte-identical to what every project
-  gets.
-- The `init` scaffolder (`/usr/local/bin/init`, run via `docker run --rm -it
-  -v "$PWD":/out ghcr.io/sadotu/agent-devcontainer init`) is a normal script
-  on PATH, deliberately NOT an `ENTRYPOINT`. The devcontainer lifecycle
-  (`devcontainer up` sets its own container command) is the source of most
-  past pain here (stale images, ownership, sudo) — an entrypoint dispatcher
-  would have put init logic in that critical path for no benefit. `docker
-  run IMAGE init` resolves `init` via PATH instead, leaving container start
-  completely untouched. It also can't produce the project files from
-  *inside* the devcontainer lifecycle (postCreate runs too late — the files
-  it would write are the ones needed to start the container), which is why
-  it's a separate `docker run`, not a postCreate step.
-- `set -eo pipefail` + a pipeline ending in `grep` that legitimately finds
-  no match (e.g. parsing a session key out of CLI output when auth failed)
-  kills the whole script immediately via `set -e` — silently, no error
-  surfaced, script just stops. `grep`'s exit 1 ("no lines matched") counts
-  as pipefail's rightmost-nonzero even when every other stage in the pipe
-  succeeds. Any pipeline whose "not found" case is expected/handled needs
-  an explicit `|| true` on the whole thing, not just on the final
-  assignment — see the `BW_SESSION` extraction in `setup-agents.sh` for two
-  bugs of this exact shape hit back to back.
-- A plain `bw login` (no `--raw`) already unlocks the vault and prints the
-  session key inside its success banner ("You are logged in!\n\n...export
-  BW_SESSION=\"...\"") — chaining a separate `bw unlock` after it just adds
-  a second, easy-to-miss master-password prompt. `setup-agents.sh` parses
-  the key out of the banner text, which works regardless of `--raw`'s exact
-  behavior. (Whether `login --raw` suppresses the banner the way
-  `unlock --raw` does was never actually verified — an earlier note here
-  claimed it was "confirmed against a real run", but every observed failure
-  turned out to be running a stale pre-fix image, so that claim had no
-  evidence behind it.) The parser also strips ANSI escape codes and sets
-  `NO_COLOR=1 FORCE_COLOR=0` as precautionary hardening — also not an
-  observed failure mode, just cheap insurance.
-- **A floating image tag (`:latest`) goes stale silently.** `devcontainer
-  up` — even with `--remove-existing-container --build-no-cache` — never
-  passes `--pull`, so it reuses whatever digest the local Docker cache has
-  for the tag. Three rounds of published fixes never reached the machine
-  that was testing them; every "still broken" report was the original
-  image re-running. `dc up` now `docker pull`s the image named
-  in `devcontainer.json` first. When debugging "my fix didn't work",
-  compare the `FROM ...@sha256:` digest in the rebuild log against the
-  latest published digest before assuming the fix is wrong.
-- `dotagents` (skill distribution, see `.devcontainer/agents.toml`) only
-  resolves a bare `name` + `source = "owner/repo"` entry against a
-  `skills/<name>/` subdirectory in the source repo — a skill directory
-  sitting at the source repo's root won't be found without an explicit
-  `path` field. Its YAML frontmatter parser also rejects an unquoted
-  `description:` value containing a mid-string `: ` (colon+space) — quote
-  the value. Both hit migrating `github-issue` into `Sadotu/agent-skills`.
-- `dotagents-install.sh --upgrade` (run on every `dc up`, see above) can
-  rewrite `agents.lock`'s `resolved_commit` pins whenever an upstream skill
-  moved, leaving the primary worktree dirty. worktree-warden refuses to
-  fast-forward local `main` while it's dirty and never retries, so a routine
-  pin bump silently wedged it (#79) until a human noticed and cleaned the
-  tree by hand. `setup-agents.sh` never commits the bump onto the primary
-  worktree's `main` (that would leave it dirty for exactly the same
-  reason) — instead, when a diff appears and primary is on `main`, it
-  copies the new `agents.lock` into a throwaway `git worktree`, commits and
-  pushes it on a fresh `agent/agents-lock-upgrade-<timestamp>` branch, opens
-  a PR for the human to review and merge, then restores the primary
-  worktree's tracked copy so it's never left dirty. Prints a WARNING with
-  the PR URL either way, so a failed auto-PR is never silent either.
-- Bitwarden auto-login (`setup-agents.sh`): the GitHub App key, the Claude
-  OAuth token, and the Codex auth each need the vault unlocked, but only ONE
-  unlock should happen. They call a shared idempotent `ensure_bw_session`
-  (`fatal` for the required App key, `besteffort` for the two seeds) —
-  DON'T re-inline a per-consumer unlock or gate a seed on `BW_SESSION`. The
-  original bug did exactly that: seeds gated on `BW_SESSION`, which was only
-  set inside the App-key-missing branch, so on any rebuild where the App key
-  was already in its volume the vault never unlocked and both seeds silently
-  no-op'd.
-- The fetched Claude OAuth token is persisted to `~/.claude/oauth-env`
-  (chmod 600, on the persisted `~/.claude` volume) and sourced from
-  `.bashrc` — an in-script `export` alone dies with the setup process and
-  never reaches the interactive `claude`. Consequence: rotating the token in
-  Bitwarden does NOT propagate on the next rebuild, because the seed skips
-  when `oauth-env` already exists (that skip is what keeps rebuilds
-  headless). To pick up a rotated token, delete `~/.claude/oauth-env` (or
-  `dc wipe-volumes`) to force a re-fetch. Codex auth (`~/.codex/auth.json`)
-  self-renews via its refresh token, so it doesn't need this.
-- issue-orchestrator self-updates on every `dc up`, same mechanism as
-  Claude Code/Codex: `setup-agents.sh` installs
-  `@nickysagan/issue-orchestrator@latest` from npmjs into the user-owned
-  `~/.npm-global` prefix, which shadows the Dockerfile-baked vendored-tarball
-  fallback on PATH. `bump-vendor.sh` + `publish-image.yml` are now only needed
-  for the occasional baked-in-fallback bump, not day-to-day freshness. Traps
-  worth keeping:
-  - **The name is `@nickysagan/issue-orchestrator` on npmjs**, not
-    `issue-orchestrator` and not `@sadotu/...`. npm scopes must match the
-    publishing npm account, which is `nickysagan`; `sadotu` is the GitHub
-    owner and means nothing to npm. Installing the bare name 404s forever
-    and falls back silently — that shipped once (#39).
-  - **It is on npmjs, not GitHub Packages, and that is deliberate.** GitHub
-    Packages rejects GitHub App installation tokens outright — `403
-    {"error":"Permission installation not allowed to Read organization
-    package"}` for a token that *does* carry `packages:read` — and has no
-    anonymous read even for public packages. The trap that cost a full
-    round-trip (#41, reverted): `npm whoami` against that registry succeeds
-    and returns `container-coding-agent[bot]`, because identity is accepted
-    and only the package read is denied. **Never take a successful `whoami`
-    as proof an install will work — test an actual read.** npmjs needs no
-    credential at all, which is why it won.
-  - **Never run `issue-orchestrator --version`.** It takes no flags, so any
-    invocation starts the supervisor and its workers. Read the version from
-    `npm list -g` instead.
-  It stays a separate `npm install -g` call from claude/codex's, not
-  combined into one — `npm install -g` resolves every argument before
-  installing any of them, so one unreachable package aborts the whole
-  command atomically and silently stops claude/codex updating too.
-  Confirmed by testing `npm install -g <real-pkg> <nonexistent-pkg>`
-  together — nothing installs, exit 1.
-- worktree-warden (issue #63) autostarts one instance per repository via
-  `postStartCommand` (`start-worktree-warden.sh`), same npm+vendored-fallback
-  install pattern as issue-orchestrator. It runs foreground in a detached
-  tmux session named `worktree-warden` — **never invoke the bare
-  `worktree-warden` binary as a version/health probe**, same trap as
-  issue-orchestrator: any non-`status` argument either starts the daemon or
-  is rejected, neither is a version probe; read the version from `npm list -g`
-  instead. State (attention items, self-healing PID lock, bounded log) lives
-  under `<git-common-dir>/worktree-warden/` — `state.json` is the durable
-  record `worktree-warden-summary.sh` reads to print the concise
-  `Worktree Warden: PR #<n> / issue #<n> failed — <status>: <reason>` line
-  surfaced in every new interactive shell and in `start work`; it never
-  retries a failure automatically, so `status != "pending"` entries stay
-  until manually resolved per the package's own README.
-- Claude Connectors are account-level, riding along with whatever
-  `CLAUDE_CODE_OAUTH_TOKEN` authenticates the session — not project-scoped.
-  Forwarding the host token in means a host-enabled GitHub connector would
-  let agents push/PR as *you*, not the GitHub App. `setup-agents.sh` denies
-  `mcp__github__*` in `~/.claude/settings.json` (merged, every run) and
-  strips any `[mcp_servers.*github*]` from Codex's `config.toml` (no
-  ambient connector there, but same opt-in-config risk). Needs
-  `dc up`, not `dc setup` — it's baked into the image.
-- Sentinel pause/resume notifications (issue #78) are a two-package protocol:
-  Sentinel (>= commit `300c65c0`) flips a managed-container lease to
-  `pause_pending` and waits up to 30s for `POST
-  /managed-containers/:id/acknowledge` before pausing;
+- Codex `--sandbox workspace-write` → `bwrap: No permissions to create a new
+  namespace` (Docker seccomp blocks user-namespace syscall). Fix:
+  `--sandbox danger-full-access` — bind mount is already the sandbox
+  boundary. (`setup-agents.sh` `cx`/`cx-auto`.)
+- `<project>-github-app-config` volume mounts root-owned on first use, was
+  missing from `chown -R` list in `setup-agents.sh` → `vscode` couldn't write
+  `app-id`/`private-key.pem` (no `sudo`, no in-container fix). Fixed: added
+  `$HOME/.config/github-app` to chown list (setup-agents.sh line ~12).
+- `dc` is host-side (runs `devcontainer up`, so can't be image-baked —
+  must exist pre-pull). It's project-agnostic (derives PROJECT_NAME from
+  repo dir), baked into image as template
+  (`/opt/agent-devcontainer/templates/dc`) that `init` scaffolder emits
+  per-project — single source of truth, no drift.
+- `init` scaffolder (`/usr/local/bin/init`) is deliberately a plain PATH
+  script, not `ENTRYPOINT` — keeps it out of `devcontainer up`'s container-
+  start path (past source of stale-image/ownership/sudo pain). Also can't
+  run as postCreate (too late — those are the files needed to start the
+  container), hence separate `docker run IMAGE init`.
+- `set -eo pipefail` + pipeline ending in `grep` with legitimate no-match
+  (e.g. session-key parse on failed auth) → `grep` exit 1 trips `set -e`,
+  script dies silently. Any expected-empty pipeline needs `|| true` on the
+  whole pipeline, not just final assignment — see `BW_SESSION` extraction in
+  `setup-agents.sh` (hit twice, same shape).
+- `bw login` (no `--raw`) already unlocks vault + prints session key in its
+  success banner — no separate `bw unlock` needed (avoids 2nd password
+  prompt). `setup-agents.sh` parses key from banner text. Also strips ANSI,
+  sets `NO_COLOR=1 FORCE_COLOR=0` (precautionary, not an observed failure).
+- **Floating `:latest` tag goes stale silently.** `devcontainer up` never
+  passes `--pull` even with `--build-no-cache` → reuses cached digest. `dc up`
+  now `docker pull`s first. Debugging "fix didn't work": compare
+  `FROM ...@sha256:` digest in rebuild log vs latest published digest.
+- `dotagents` (`.devcontainer/agents.toml`) only resolves bare `name` +
+  `source = "owner/repo"` against `skills/<name>/` subdir — root-level skill
+  dir needs explicit `path`. YAML parser also rejects unquoted
+  `description:` with mid-string `: ` — quote it. (Hit migrating
+  `github-issue` → `Sadotu/agent-skills`.)
+- `dotagents-install.sh --upgrade` (every `dc up`) can rewrite
+  `agents.lock` pins, leaving primary worktree dirty — worktree-warden
+  refuses to fast-forward `main` while dirty and never retries, so a
+  routine bump silently wedged it (#79). Fix: `setup-agents.sh` never
+  commits the bump onto primary `main`; instead copies the new
+  `agents.lock` into a throwaway worktree, commits/pushes on
+  `agent/agents-lock-upgrade-<timestamp>`, opens a PR for human review,
+  restores primary's tracked copy clean. Always prints a WARNING with the
+  PR URL (success or failure), never silent.
+- Bitwarden auto-login: GitHub App key, Claude OAuth, Codex auth all need
+  vault unlocked but only ONE unlock — shared idempotent
+  `ensure_bw_session` (`fatal` for App key, `besteffort` for the two seeds).
+  Don't gate a seed on `BW_SESSION` directly — original bug: seed only ran
+  inside the App-key-missing branch, so rebuilds with App key already
+  present never unlocked vault, seeds silently no-op'd.
+- Claude OAuth token persisted to `~/.claude/oauth-env` (chmod 600,
+  persisted volume), sourced from `.bashrc` (in-script `export` alone dies
+  with setup process). Rotating token in Bitwarden does NOT auto-propagate —
+  seed skips if file exists (keeps rebuilds headless). Force re-fetch:
+  delete `~/.claude/oauth-env` or `dc wipe-volumes`. Codex auth self-renews,
+  no action needed.
+- issue-orchestrator self-updates every `dc up` via
+  `@nickysagan/issue-orchestrator@latest` from npmjs → `~/.npm-global`
+  (shadows Dockerfile-baked fallback). Traps:
+  - Name is `@nickysagan/issue-orchestrator` — not bare `issue-orchestrator`,
+    not `@sadotu/...`. Wrong name 404s and falls back silently (#39).
+  - On npmjs, not GitHub Packages, deliberately — GitHub Packages rejects
+    App tokens for reads (`403 Permission installation not allowed`) even
+    though `npm whoami` succeeds. **Whoami success ≠ read works** — test an
+    actual read. npmjs needs no credential.
+  - Never run `issue-orchestrator --version` — no flags supported, any arg
+    starts the daemon. Get version from `npm list -g`.
+  - Kept as separate `npm install -g` call from claude/codex's — one
+    unreachable package aborts the whole command atomically, would silently
+    stop claude/codex updating too (confirmed: two-package install with one
+    bad name → nothing installs, exit 1).
+- worktree-warden (#63) autostarts via `postStartCommand`
+  (`start-worktree-warden.sh`), same npm+fallback pattern, runs in detached
+  tmux session `worktree-warden`. Same version-probe trap as
+  issue-orchestrator — never invoke bare binary to check version, use
+  `npm list -g`. State under `<git-common-dir>/worktree-warden/`;
+  `state.json` drives the `Worktree Warden: PR #<n> / issue #<n> failed —
+  <status>: <reason>` line shown on new shells / `start work`. No auto-retry
+  — stays until manually resolved.
+- Claude Connectors are account-level (ride `CLAUDE_CODE_OAUTH_TOKEN`), not
+  project-scoped — a host GitHub connector would let agents push/PR as
+  *you*, not the App. `setup-agents.sh` denies `mcp__github__*` in
+  `~/.claude/settings.json` (every run) and strips
+  `[mcp_servers.*github*]` from Codex `config.toml`. Needs `dc up`, baked
+  into image.
+- Sentinel pause/resume (#78): two-package protocol — Sentinel (>=
+  `300c65c0`) flips a managed-container lease to `pause_pending`, waits up
+  to 30s for `POST /managed-containers/:id/acknowledge` before pausing;
   `@nickysagan/issue-orchestrator` >= 0.2.0 prints the pre-pause message,
   flushes it, acknowledges, then prints the resume message when the lease
-  returns to `running`. **The live end-to-end smoke test cannot run from
-  inside the project container**: no docker socket is mounted (and
-  `dc-sentinel.test.sh` actively forbids mounting one), a paused container
-  cannot clear its own `/_smoke/usage/claude-code` override, and
-  `dc create_sentinel` never sets `USAGE_SENTINEL_SMOKE_TOKEN`, so that
-  endpoint 404s. Force the threshold, watch `docker pause`/`unpause`, and
-  clear the override from the host.
+  returns to `running`. **Live end-to-end smoke test can't run from inside
+  the project container**: no docker socket is mounted (`dc-sentinel.test.sh`
+  forbids mounting one), a paused container can't clear its own
+  `/_smoke/usage/claude-code` override, and `dc create_sentinel` never sets
+  `USAGE_SENTINEL_SMOKE_TOKEN` (endpoint 404s). Force the threshold, watch
+  `docker pause`/`unpause`, clear the override from the host.
 
 ### GitHub App auth
 
