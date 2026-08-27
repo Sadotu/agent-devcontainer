@@ -3,5 +3,18 @@
     "deny": [
       "mcp__github__*"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/agent-devcontainer/deny-merge.sh"
+          }
+        ]
+      }
+    ]
   }
 }

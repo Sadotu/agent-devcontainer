@@ -44,7 +44,6 @@ fi
 
 default_name="${detect_name:-}"
 default_owner="${detect_owner:-Sadotu}"
-default_appid="4217970"
 
 ask() { # prompt-label  default  -> echoes chosen value
   local label="$1" def="$2" ans
@@ -69,7 +68,6 @@ if [ -n "$detect_owner$detect_name" ]; then
 fi
 PROJECT_NAME="$(ask 'Project name' "$default_name")"
 GH_OWNER="$(ask 'GitHub owner' "$default_owner")"
-APP_ID="$(ask 'GitHub App ID' "$default_appid")"
 
 DEST="$OUT/.devcontainer"
 mkdir -p "$DEST"
@@ -90,7 +88,6 @@ fi
 if confirm_overwrite "$DEST/devcontainer.json"; then
   sed -e "s|__PROJECT_NAME__|$PROJECT_NAME|g" \
       -e "s|__GH_OWNER__|$GH_OWNER|g" \
-      -e "s|__APP_ID__|$APP_ID|g" \
       "$TEMPLATES/devcontainer.json.template" > "$DEST/devcontainer.json"
   echo "  wrote .devcontainer/devcontainer.json"
 fi

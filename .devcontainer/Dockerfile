@@ -1,7 +1,7 @@
 # Secure agent workspace — shared image for every project using this
-# devcontainer. Nothing project-specific is baked in; PROJECT_NAME/GH_OWNER/
-# APP_ID are supplied at container start via each project's own
-# devcontainer.json (see /opt/agent-devcontainer/setup-agents.sh).
+# devcontainer. Nothing project-specific is baked in; PROJECT_NAME/GH_OWNER
+# are supplied at container start via each project's own devcontainer.json
+# (see /opt/agent-devcontainer/setup-agents.sh).
 #
 # Security model:
 # - Only the workspace folder is bind-mounted (see devcontainer.json).
@@ -101,7 +101,7 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
         codex-auth-sync.sh dotagents-install.sh refresh-skills.sh \
-        start-worktree-warden.sh worktree-warden-summary.sh \
+        start-worktree-warden.sh worktree-warden-summary.sh deny-merge.sh \
         /opt/agent-devcontainer/
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
 # codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
@@ -122,6 +122,7 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/refresh-skills.sh \
         /opt/agent-devcontainer/start-worktree-warden.sh \
         /opt/agent-devcontainer/worktree-warden-summary.sh \
+        /opt/agent-devcontainer/deny-merge.sh \
         /opt/agent-devcontainer/githooks/pre-push
 
 # Project scaffolder + the two per-project files it emits.

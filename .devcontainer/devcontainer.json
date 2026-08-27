@@ -24,8 +24,7 @@
     "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
     "SENTINEL_URL": "http://usage-sentinel:4317",
     "PROJECT_NAME": "agent-devcontainer",
-    "GH_OWNER": "Sadotu",
-    "APP_ID": "4217970"
+    "GH_OWNER": "Sadotu"
   },
   "postCreateCommand": "/opt/agent-devcontainer/setup-agents.sh",
   "postStartCommand": "/opt/agent-devcontainer/start-worktree-warden.sh",

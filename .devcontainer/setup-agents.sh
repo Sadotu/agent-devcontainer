@@ -142,18 +142,32 @@ git config --global credential.https://github.com.helper \
 # defeating the whole point of the App identity. Force every rebuild to deny
 # it (idempotent merge, not overwrite: preserves anything else already in
 # ~/.claude/settings.json).
-echo "==> Blocking GitHub MCP connector for Claude Code (App-only GitHub auth)"
+#
+# The same merge also (re)installs the deny-merge PreToolUse hook (#95) —
+# the local backstop against `gh pr merge` / PUT-merge / a protected-branch
+# push now that server-side branch protection is unavailable. Idempotent by
+# filtering out any existing PreToolUse entry whose command names
+# deny-merge.sh before appending ours, so unrelated hooks and re-runs both
+# leave exactly one entry.
+echo "==> Blocking GitHub MCP connector + installing deny-merge hook (App-only GitHub auth)"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 mkdir -p "$HOME/.claude"
 [ -s "$CLAUDE_SETTINGS" ] || echo '{}' > "$CLAUDE_SETTINGS"
 if jq -e . "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
   tmp_settings="$(mktemp)"
-  jq -s '.[0] * {permissions: {deny: (((.[0].permissions.deny // []) + (.[1].permissions.deny // [])) | unique)}}' \
-    "$CLAUDE_SETTINGS" "$TOOLDIR/claude-settings.json" > "$tmp_settings" \
+  jq -s '
+    (.[0].hooks.PreToolUse // []) as $existing_hooks
+    | (.[1].hooks.PreToolUse // []) as $our_hooks
+    | ($existing_hooks | map(select(((.hooks // []) | any(((.command // "") | test("deny-merge\\.sh")))) | not))) as $filtered_hooks
+    | .[0] * {
+        permissions: {deny: (((.[0].permissions.deny // []) + (.[1].permissions.deny // [])) | unique)},
+        hooks: {PreToolUse: ($filtered_hooks + $our_hooks)}
+      }
+  ' "$CLAUDE_SETTINGS" "$TOOLDIR/claude-settings.json" > "$tmp_settings" \
     && mv "$tmp_settings" "$CLAUDE_SETTINGS"
-  echo "    mcp__github__* denied in ~/.claude/settings.json."
+  echo "    mcp__github__* denied and deny-merge hook installed in ~/.claude/settings.json."
 else
-  echo "WARNING: ~/.claude/settings.json is not valid JSON — skipping connector-deny merge." >&2
+  echo "WARNING: ~/.claude/settings.json is not valid JSON — skipping connector-deny/hook merge." >&2
 fi
 
 # Codex has no equivalent ambient "connector" (its MCP servers are opt-in,

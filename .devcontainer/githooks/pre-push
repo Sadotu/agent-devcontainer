@@ -5,8 +5,11 @@
 #      origin/main lags far behind, which balloons the PR diff with unrelated
 #      files (GitHub diffs against the merge-base). Warning only; the
 #      github-issue skill enforces the hard gate before opening a PR.
-# Real enforcement is branch protection on the Git server — this hook only
-# stops accidents by agents or humans inside the container.
+# Real enforcement is this hook plus the Claude Code deny-merge PreToolUse
+# hook (.devcontainer/deny-merge.sh) — there is no server-side backstop
+# (branch protection is unavailable on the private, free-plan org these
+# repos live in). Together they block agents; a human can still override
+# with --no-verify.
 # Deliberate override: git push --no-verify
 set -u
 
