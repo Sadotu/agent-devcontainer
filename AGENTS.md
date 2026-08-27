@@ -45,8 +45,15 @@ Agents may not:
 - use admin APIs
 
 A global pre-push hook blocks direct pushes to `main`/`master`/`develop`
-locally; branch protection on GitHub is the real enforcement. Do not use
+locally. There is no server-side branch protection backstop — these repos
+live in a free-plan, private-repo GitHub org where branch protection is
+unavailable, so this hook is the real enforcement. Do not use
 `--no-verify`.
+
+Codex has no hook system, so it is not technically prevented from running
+`gh pr merge` the way Claude Code is (Claude Code sessions are blocked by
+`.devcontainer/deny-merge.sh`, a `PreToolUse` hook). Never merge a pull
+request unless the user explicitly says to.
 
 Commit messages in first person, as if authored by the user. No
 Co-Authored-By trailers.

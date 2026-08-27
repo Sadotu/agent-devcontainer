@@ -160,3 +160,11 @@ Agents may not:
 - modify GitHub App permissions
 - modify `.github/workflows` unless explicitly asked
 - use admin APIs
+
+Merges and protected-branch pushes are blocked locally: a Claude Code
+`PreToolUse` hook (`.devcontainer/deny-merge.sh`) refuses `gh pr merge` and
+PUT-to-merge API calls, and the pre-push git hook refuses direct pushes to
+`main`/`master`/`develop`. There is no server-side branch protection
+backstop — these repos live in a free-plan, private-repo GitHub org where
+branch protection is unavailable, so the local hooks are the real
+enforcement.
