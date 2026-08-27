@@ -130,6 +130,22 @@ GITHUB_APP_DIR="$HOME/.config/github-app"
 mkdir -p "$GITHUB_APP_DIR"
 git config --global credential.https://github.com.helper \
   "!$TOOLDIR/git-credential-github-app.sh"
+
+# Never fall back to an interactive username/password prompt if the App
+# credential helper above fails (stale GH_OWNER after a repo moves orgs, an
+# expired/missing App key, a network blip, ...) — git must error loudly
+# instead of hanging on a login prompt this container's auth policy forbids
+# ever answering. Exported here for this script's own process tree
+# (dotagents-install.sh/npx children spawned later in this same run); also
+# persisted to ~/.bashrc so every future interactive shell has it too.
+export GIT_TERMINAL_PROMPT=0
+if ! grep -q "# --- agent-devcontainer no interactive git prompt ---" "$BASHRC"; then
+  cat >> "$BASHRC" <<'EOF'
+
+# --- agent-devcontainer no interactive git prompt ---
+export GIT_TERMINAL_PROMPT=0
+EOF
+fi
 # ------------------------------------------------------------------------------
 
 # --- Block GitHub access via MCP connectors (App-only, not "as you") ---------
