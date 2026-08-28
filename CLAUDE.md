@@ -129,15 +129,16 @@ key is mounted outside the repo (persisted container volume, fetched from
 Bitwarden or dropped in manually — never committed) and must never be
 printed or committed.
 
-Before every `gh` command, mint a short-lived token with the baked-in helper:
+Plain `gh` commands authenticate automatically: a shell wrapper wired by
+`setup-agents.sh` mints a short-lived App token for every call, as the Git
+credential helper does for `git push` and `git fetch`.
 
 ```bash
-GH_TOKEN="$(/opt/agent-devcontainer/gh-app-token.sh)" gh issue list --repo Sadotu/agent-devcontainer
+gh issue list --repo Sadotu/agent-devcontainer
 ```
 
-`git push`/`git fetch` need no manual auth — a credential helper wired by
-`setup-agents.sh` mints tokens automatically. Do not use unauthenticated
-`gh issue`, `gh pr`, or `gh api` commands when working on GitHub issues.
+If automatic authentication fails, run `/setup`. Do not bypass the wrapper or
+use unauthenticated `gh issue`, `gh pr`, or `gh api` commands.
 
 ### Git & PR policy (container agents)
 

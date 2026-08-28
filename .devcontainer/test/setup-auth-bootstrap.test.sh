@@ -9,6 +9,59 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Exercise the real BashRC-emission block twice, then load its output in fresh
+# shells against controlled token-helper and gh binaries.
+run_gh_wrapper_setup() { # <bashrc-path> <tooldir>
+  BASHRC="$1"
+  TOOLDIR="$2"
+  export BASHRC TOOLDIR
+  sed -n '/^# --- gh CLI App authentication/,/^# --- End gh CLI App authentication/p' "$SETUP" \
+    | source /dev/stdin
+}
+
+GH_HOME="$TMP/gh-home"
+GH_TOOLDIR="$TMP/gh-tools"
+mkdir -p "$GH_HOME" "$GH_TOOLDIR" "$TMP/bin"
+: >"$GH_HOME/.bashrc"
+
+cat >"$GH_TOOLDIR/gh-app-token.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'test-app-token\n'
+EOF
+chmod +x "$GH_TOOLDIR/gh-app-token.sh"
+
+cat >"$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'token=%s args=%s\n' "${GH_TOKEN:-}" "$*"
+EOF
+chmod +x "$TMP/bin/gh"
+
+run_gh_wrapper_setup "$GH_HOME/.bashrc" "$GH_TOOLDIR"
+run_gh_wrapper_setup "$GH_HOME/.bashrc" "$GH_TOOLDIR"
+sed -i "s|/opt/agent-devcontainer/gh-app-token.sh|$GH_TOOLDIR/gh-app-token.sh|" "$GH_HOME/.bashrc"
+
+OUT="$(HOME="$GH_HOME" PATH="$TMP/bin:$PATH" bash -ic 'gh issue list' 2>/dev/null)" \
+  || fail "generated gh wrapper did not run ($OUT)"
+[ "$OUT" = 'token=test-app-token args=issue list' ] \
+  || fail "generated gh wrapper did not pass minted token to real gh ($OUT)"
+[ "$(grep -c '^gh() {' "$GH_HOME/.bashrc")" -eq 1 ] \
+  || fail "gh wrapper was not appended idempotently"
+
+cat >"$GH_TOOLDIR/gh-app-token.sh" <<'EOF'
+#!/usr/bin/env bash
+echo 'APP TOKEN FAILURE' >&2
+exit 23
+EOF
+chmod +x "$GH_TOOLDIR/gh-app-token.sh"
+
+set +e
+OUT="$(HOME="$GH_HOME" PATH="$TMP/bin:$PATH" bash -ic 'gh issue list' 2>&1)"
+STATUS=$?
+set -e
+[ "$STATUS" -eq 1 ] || fail "token-helper failure returned $STATUS instead of 1"
+grep -Fq 'APP TOKEN FAILURE' <<<"$OUT" || fail "token-helper error was hidden ($OUT)"
+! grep -Fq 'token=' <<<"$OUT" || fail "real gh ran after token-helper failure ($OUT)"
+
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/bw" <<'EOF'
 #!/usr/bin/env bash

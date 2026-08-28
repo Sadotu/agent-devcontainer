@@ -64,14 +64,16 @@ Use the configured GitHub App for all GitHub CLI issue and PR commands. The
 App ID is `4217970`; the private key is mounted outside the repo and must
 never be printed or committed.
 
-Before every `gh` command, mint a short-lived token with the baked-in helper:
+Plain `gh` commands authenticate automatically: a shell wrapper wired by
+`setup-agents.sh` mints a short-lived App token for every call, as the Git
+credential helper does for `git push` and `git fetch`.
 
 ```bash
-GH_TOKEN="$(/opt/agent-devcontainer/gh-app-token.sh)" gh issue list --repo Sadotu/agent-devcontainer
+gh issue list --repo Sadotu/agent-devcontainer
 ```
 
-Do not use unauthenticated `gh issue`, `gh pr`, or `gh api` commands when
-working on GitHub issues.
+If automatic authentication fails, run `/setup`. Do not bypass the wrapper or
+use unauthenticated `gh issue`, `gh pr`, or `gh api` commands.
 
 Respond terse like smart caveman. All technical substance stay. Only fluff die.
 
