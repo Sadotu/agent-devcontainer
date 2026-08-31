@@ -177,6 +177,22 @@ export DC_DOCKER_SOCK="$TMP/docker.sock"
 FAKE_SOCK_GID="$(stat -c '%g' "$DC_DOCKER_SOCK")"
 export FAKE_SOCK_GID
 
+cat >"$TMP/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${FAKE_STAT_STYLE:-gnu}" = bsd ]; then
+  if [ "${1:-}" = -c ]; then
+    echo 'stat: illegal option -- c' >&2
+    exit 1
+  fi
+  [ "${1:-}" = -f ] && [ "${2:-}" = '%g' ] || exit 2
+  echo "$FAKE_SOCK_GID"
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+EOF
+chmod +x "$TMP/bin/stat"
+
 run_dc() {
   FAKE_SCENARIO="$1" LOG="$TMP/$1-$2.log" FAKE_DOCKER_LOG="$TMP/$1-$2.log"
   export FAKE_SCENARIO FAKE_DOCKER_LOG
@@ -214,6 +230,10 @@ run_dc healthy up
 assert_log "docker pull ghcr.io/sadotu/usage-sentinel:latest"
 assert_no_log "docker start usage-sentinel"
 assert_no_log "docker rm"
+
+FAKE_STAT_STYLE=bsd run_dc healthy up
+[ "$RC" -eq 0 ] || fail "healthy sentinel rejected with BSD stat"
+grep -Fq 'illegal option' "$TMP/err" && fail "GNU stat probe leaked stderr before BSD fallback"
 
 run_dc rewritten_sock_source up
 [ "$RC" -eq 0 ] || fail "Docker Desktop rewritten socket source rejected"
