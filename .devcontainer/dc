@@ -50,6 +50,15 @@ require() {
   }
 }
 
+# GNU and BSD/macOS stat use different flags for the same fields.
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+file_gid() {
+  stat -c '%g' "$1" 2>/dev/null || stat -f '%g' "$1"
+}
+
 require docker "Install Docker Desktop and enable WSL integration for this distro."
 docker ps >/dev/null 2>&1 || {
   echo "ERROR: docker daemon not reachable." >&2
@@ -98,8 +107,8 @@ sync_codex_auth() {
     rm -f -- "$handoff"
     return 1
   fi
-  if [ "$(stat -c '%a' "$handoff")" != 600 ]; then
-    echo "ERROR: container returned Codex auth handoff without mode 0600 ($(stat -c '%a' "$handoff")); host auth unchanged." >&2
+  if [ "$(file_mode "$handoff")" != 600 ]; then
+    echo "ERROR: container returned Codex auth handoff without mode 0600 ($(file_mode "$handoff")); host auth unchanged." >&2
     rm -f -- "$handoff"
     return 1
   fi
@@ -130,7 +139,7 @@ sync_codex_auth() {
 
   if ! mv -f -- "$stage" "$host_auth" || \
      ! codex_auth_file_valid "$host_auth" || \
-     [ "$(stat -c '%a' "$host_auth")" != 600 ]; then
+     [ "$(file_mode "$host_auth")" != 600 ]; then
     echo "ERROR: failed to install valid mode-0600 host Codex auth; restoring previous file." >&2
     rm -f -- "$stage"
     if [ "$had_original" -eq 1 ]; then
@@ -322,7 +331,7 @@ docker_sock_gid() {
     echo "ERROR: $DC_DOCKER_SOCK not found; Sentinel enforcement requires Docker socket access." >&2
     return 1
   fi
-  stat -c '%g' "$DC_DOCKER_SOCK"
+  file_gid "$DC_DOCKER_SOCK"
 }
 
 ensure_sentinel_network() {

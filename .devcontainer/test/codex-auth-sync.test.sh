@@ -218,6 +218,19 @@ cat >"$HOST_TMP/bin/stat" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 last="${!#}"
+if [ "${FAKE_STAT_STYLE:-gnu}" = bsd ]; then
+  if [ "${1:-}" = -c ]; then
+    echo 'stat: illegal option -- c' >&2
+    exit 1
+  fi
+  [ "${1:-}" = -f ] && [ "${2:-}" = '%Lp' ] || exit 2
+  if [ "${FAKE_BAD_INSTALLED_MODE:-0}" = 1 ] && [ "$last" = "$CODEX_HOME/auth.json" ]; then
+    printf '644\n'
+  else
+    /usr/bin/stat -c '%a' "$last"
+  fi
+  exit 0
+fi
 if [ "${FAKE_BAD_INSTALLED_MODE:-0}" = 1 ] && [ "$last" = "$CODEX_HOME/auth.json" ]; then
   printf '644\n'
 else
@@ -279,6 +292,13 @@ FAKE_AUTH="$OTHER_VALID" run_dc codex-push
 [ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc codex-push: host auth not updated from validated handoff"
 [ "$(stat -c '%a' "$HOST_TMP/global-codex/auth.json")" = 600 ] || fail "dc codex-push: host auth mode not 600"
 ! grep -Fq 'rt-NEW' <<<"$DC_OUT" || fail "dc codex-push: credential leaked to output"
+
+printf '%s\n' "$VALID_AUTH" >"$HOST_TMP/global-codex/auth.json"
+chmod 600 "$HOST_TMP/global-codex/auth.json"
+FAKE_STAT_STYLE=bsd FAKE_AUTH="$OTHER_VALID" run_dc codex-push
+[ "$DC_STATUS" -eq 0 ] || fail "dc codex-push with BSD stat: expected success, got $DC_STATUS ($DC_OUT)"
+[ "$(cat "$HOST_TMP/global-codex/auth.json")" = "$OTHER_VALID" ] || fail "dc codex-push with BSD stat: host auth not updated"
+grep -Fq 'illegal option' <<<"$DC_OUT" && fail "dc codex-push with BSD stat: GNU probe stderr leaked"
 
 # Real helper status must not mix with JSON-only handoff stdout.
 printf '%s' "$OTHER_VALID" >"$CODEX_AUTH"
