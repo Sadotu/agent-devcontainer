@@ -22,7 +22,10 @@ chmod +x "$GH_TOOLDIR/gh-app-token.sh"
 
 cat >"$TMP/bin/real-gh" <<'EOF'
 #!/usr/bin/env bash
-printf 'token=%s args=%s\n' "${GH_TOKEN:-}" "$*"
+printf 'token=%s argc=%s\n' "${GH_TOKEN:-}" "$#"
+for arg in "$@"; do
+  printf 'arg=<%s>\n' "$arg"
+done
 EOF
 chmod +x "$TMP/bin/real-gh"
 
@@ -31,16 +34,16 @@ sed -i "s|/opt/agent-devcontainer/gh-app-token.sh|$GH_TOOLDIR/gh-app-token.sh|; 
 chmod +x "$TMP/bin/gh"
 
 for shell in sh bash zsh; do
-  OUT="$(PATH="$TMP/bin:$PATH" "$shell" -c 'gh issue list')" \
+  OUT="$(PATH="$TMP/bin:$PATH" "$shell" -c 'gh issue list "title with spaces"')" \
     || fail "$shell shim invocation failed ($OUT)"
-  [ "$OUT" = 'token=test-app-token args=issue list' ] \
+  [ "$OUT" = $'token=test-app-token argc=3\narg=<issue>\narg=<list>\narg=<title with spaces>' ] \
     || fail "$shell shim did not pass minted token to real gh ($OUT)"
 done
 
 XTRACE_LOG="$TMP/gh-xtrace.log"
-OUT="$(env PATH="$TMP/bin:$PATH" SHELLOPTS=xtrace "$TMP/bin/gh" issue list 2>"$XTRACE_LOG")" \
+OUT="$(env PATH="$TMP/bin:$PATH" SHELLOPTS=xtrace "$TMP/bin/gh" issue list "title with spaces" 2>"$XTRACE_LOG")" \
   || fail "xtrace shim invocation failed ($OUT)"
-[ "$OUT" = 'token=test-app-token args=issue list' ] \
+[ "$OUT" = $'token=test-app-token argc=3\narg=<issue>\narg=<list>\narg=<title with spaces>' ] \
   || fail "xtrace shim did not pass minted token to real gh ($OUT)"
 ! grep -Fq 'test-app-token' "$XTRACE_LOG" \
   || fail "xtrace leaked minted token ($(cat "$XTRACE_LOG"))"

@@ -35,4 +35,4 @@ repo="${GITHUB_APP_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2
 # command-substitute it into the GH_TOKEN environment of the exec'd gh. The
 # value is never echoed and never appears as an argument.
 { set +x; } 2>/dev/null
-GH_TOKEN="$(GITHUB_APP_REPO="$repo" "$HELPER")" exec gh "$@"
+GH_TOKEN="$(GITHUB_APP_REPO="$repo" "$HELPER")" exec /usr/bin/gh "$@"

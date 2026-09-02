@@ -132,7 +132,14 @@ source_test() {
     grep -Fq 'COPY why-failed.sh /usr/local/bin/why-failed' "$devcontainer_dir/Dockerfile"
     [[ -f "$devcontainer_dir/ghx.sh" ]]
     [[ -f "$devcontainer_dir/why-failed.sh" ]]
-    grep -Fq 'exec gh' "$devcontainer_dir/ghx.sh"
+    grep -Fq 'COPY gh.sh /usr/local/bin/gh' "$devcontainer_dir/Dockerfile"
+    grep -Fq 'chmod 0755 /usr/local/bin/gh' "$devcontainer_dir/Dockerfile"
+    [[ -f "$devcontainer_dir/gh.sh" ]]
+    grep -Fq 'exec /usr/bin/gh "$@"' "$devcontainer_dir/ghx.sh"
+    grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/landed.sh"
+    grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/why-failed.sh"
+    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create' "$devcontainer_dir/refresh-skills.sh"
     grep -q 'GH_TOKEN=' "$devcontainer_dir/ghx.sh"
     # Never ENABLES xtrace (no `set -x`/`set -ex` in command position — comments
     # and the `set +x` defence below don't count), and DOES disable inherited
@@ -242,7 +249,8 @@ image_test() {
 
     docker run --rm "$image" bash -c '
         command -v tmux >/dev/null &&
-        command -v gh >/dev/null &&
+        test "$(command -v gh)" = /usr/local/bin/gh &&
+        test -x /usr/local/bin/gh &&
         command -v claude >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
         command -v worktree-warden >/dev/null &&

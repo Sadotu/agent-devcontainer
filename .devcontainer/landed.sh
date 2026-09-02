@@ -45,7 +45,7 @@ fi
 # The GitHub App helper exists only inside the agent devcontainer; anywhere
 # else, fall back to whatever `gh` is already authenticated as.
 if [ -x /opt/agent-devcontainer/gh-app-token.sh ]; then
-  GH() { GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" gh "$@"; }
+  GH() { GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"; }
 else
   GH() { gh "$@"; }
 fi
