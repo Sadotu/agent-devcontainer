@@ -17,6 +17,7 @@ STUB_DIR="$TMP/stubs"
 mkdir -p "$STUB_DIR"
 
 GH_LOG="$TMP/gh.log"
+TOKEN_LOG="$TMP/token.log"
 GIT_PUSH_LOG="$TMP/git-push.log"
 DOTAGENTS_LOG="$TMP/dotagents.log"
 
@@ -38,6 +39,7 @@ chmod +x "$STUB_DIR/dotagents-install.sh"
 # --- stub gh-app-token.sh: always "succeeds" with a fake token ---
 cat > "$STUB_DIR/gh-app-token.sh" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "${GITHUB_APP_REPO:-}" >> "$TOKEN_LOG"
 echo "fake-token"
 EOF
 chmod +x "$STUB_DIR/gh-app-token.sh"
@@ -62,6 +64,12 @@ fi
 exit 0
 EOF
 chmod +x "$STUB_DIR/gh"
+
+# Production bypasses PATH-level gh shims after minting a token. Redirect that
+# fixed target only in this fixture copy, avoiding a host GitHub CLI call.
+TEST_SCRIPT="$TMP/refresh-skills-under-test.sh"
+sed "s|/usr/bin/gh|$STUB_DIR/gh|g" "$SCRIPT" > "$TEST_SCRIPT"
+chmod +x "$TEST_SCRIPT"
 
 # --- stub git: passes through to the real git for everything except
 # `push`, which is recorded and can be made to fail ---
@@ -118,9 +126,9 @@ run() {
   set +e
   OUT="$(env "$@" \
     WORKSPACE="$WORKSPACE_DIR" TOOLDIR="$STUB_DIR" PROJECT_NAME=proj GH_OWNER=owner \
-    GITHUB_APP_DIR="$GITHUB_APP_DIR" GH_LOG="$GH_LOG" GIT_PUSH_LOG="$GIT_PUSH_LOG" \
+    GITHUB_APP_DIR="$GITHUB_APP_DIR" GH_LOG="$GH_LOG" TOKEN_LOG="$TOKEN_LOG" GIT_PUSH_LOG="$GIT_PUSH_LOG" \
     DOTAGENTS_LOG="$DOTAGENTS_LOG" PATH="$STUB_PATH" \
-    bash "$SCRIPT" 2>&1)"
+    bash "$TEST_SCRIPT" 2>&1)"
   STATUS=$?
   set -e
 }
@@ -129,7 +137,7 @@ reset_workspace() {
   git -C "$WORKSPACE_DIR" checkout -q main
   git -C "$WORKSPACE_DIR" reset -q --hard origin/main
   git -C "$WORKSPACE_DIR" clean -qfd
-  : > "$GH_LOG"; : > "$GIT_PUSH_LOG"; : > "$DOTAGENTS_LOG"
+  : > "$GH_LOG"; : > "$TOKEN_LOG"; : > "$GIT_PUSH_LOG"; : > "$DOTAGENTS_LOG"
 }
 gh_call_count() { grep -c '^pr ' "$GH_LOG" 2>/dev/null || true; }
 
@@ -140,8 +148,8 @@ NON_REPO="$TMP/not-a-repo"
 mkdir -p "$NON_REPO"
 set +e
 OUT="$(WORKSPACE="$NON_REPO" TOOLDIR="$STUB_DIR" PROJECT_NAME=proj GH_OWNER=owner \
-  GITHUB_APP_DIR="$GITHUB_APP_DIR" DOTAGENTS_LOG="$DOTAGENTS_LOG" PATH="$STUB_PATH" \
-  bash "$SCRIPT" 2>&1)"
+  GITHUB_APP_DIR="$GITHUB_APP_DIR" DOTAGENTS_LOG="$DOTAGENTS_LOG" TOKEN_LOG="$TOKEN_LOG" PATH="$STUB_PATH" \
+  bash "$TEST_SCRIPT" 2>&1)"
 STATUS=$?
 set -e
 [[ $STATUS -eq 0 ]] || fail "case 1: exited $STATUS, expected 0: $OUT"
@@ -156,7 +164,7 @@ mkdir -p "$EMPTY_TOOLDIR"
 reset_workspace
 set +e
 OUT="$(WORKSPACE="$WORKSPACE_DIR" TOOLDIR="$EMPTY_TOOLDIR" PROJECT_NAME=proj GH_OWNER=owner \
-  GITHUB_APP_DIR="$GITHUB_APP_DIR" PATH="$STUB_PATH" bash "$SCRIPT" 2>&1)"
+  GITHUB_APP_DIR="$GITHUB_APP_DIR" TOKEN_LOG="$TOKEN_LOG" PATH="$STUB_PATH" bash "$TEST_SCRIPT" 2>&1)"
 STATUS=$?
 set -e
 [[ $STATUS -eq 0 ]] || fail "case 2: exited $STATUS, expected 0: $OUT"
@@ -204,6 +212,8 @@ grep -Fq 'pr list' "$GH_LOG" || fail "case 6: expected a gh pr list existing-PR 
 grep -Fq 'pr create' "$GH_LOG" || fail "case 6: expected gh pr create to run: $(cat "$GH_LOG")"
 grep -Fq -- '--head agent/agents-lock-upgrade' "$GH_LOG" || \
   fail "case 6: expected the fixed bump branch name: $(cat "$GH_LOG")"
+[[ "$(wc -l < "$TOKEN_LOG")" -eq 2 ]] || \
+  fail "case 6: expected one token mint per gh call: $(cat "$TOKEN_LOG")"
 [[ "$OUT" == *"https://github.com/fake/repo/pull/999"* ]] || fail "case 6: expected the PR URL reported: $OUT"
 [[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \
   fail "case 6: primary agents.lock was not restored: $(cat "$WORKSPACE_DIR/agents.lock")"
@@ -219,6 +229,8 @@ run NEW_LOCK_CONTENT=new-lock-v2 EXISTING_PR_URL=https://github.com/fake/repo/pu
 [[ $STATUS -eq 0 ]] || fail "case 7: exited $STATUS, expected 0: $OUT"
 grep -Fq 'pr list' "$GH_LOG" || fail "case 7: expected a gh pr list check: $(cat "$GH_LOG")"
 grep -Fq 'pr create' "$GH_LOG" && fail "case 7: gh pr create should not run when a PR is already open: $(cat "$GH_LOG")"
+[[ "$(wc -l < "$TOKEN_LOG")" -eq 1 ]] || \
+  fail "case 7: expected one token mint for the gh pr list: $(cat "$TOKEN_LOG")"
 [[ -s $GIT_PUSH_LOG ]] || fail "case 7: expected the bump branch to still be pushed"
 [[ "$OUT" == *"https://github.com/fake/repo/pull/42"* ]] || fail "case 7: expected the existing PR URL reported: $OUT"
 [[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \

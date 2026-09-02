@@ -67,13 +67,13 @@ maybe_bump_agents_lock() {
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
        commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
      git -C "$bump_wt" push -qf -u origin "$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
-    existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" gh pr list \
+    existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list \
       --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
       --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)" || existing_pr=""
     if [ -n "$existing_pr" ]; then
       bump_pr_url="$existing_pr"
     else
-      bump_pr_url="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" gh pr create \
+      bump_pr_url="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create \
         --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$BUMP_BRANCH" \
         --title "chore: bump agents.lock skill pins" \
         --body "Automated \`agents.lock\` pin bump — skills re-resolved to their source's latest commit. Review the diff before merging." \

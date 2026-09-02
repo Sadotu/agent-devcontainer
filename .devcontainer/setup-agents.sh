@@ -131,20 +131,6 @@ mkdir -p "$GITHUB_APP_DIR"
 git config --global credential.https://github.com.helper \
   "!$TOOLDIR/git-credential-github-app.sh"
 
-# --- gh CLI App authentication ----------------------------------------------
-if ! grep -q "# --- agent-devcontainer gh wrapper ---" "$BASHRC"; then
-  cat >> "$BASHRC" <<'EOF'
-
-# --- agent-devcontainer gh wrapper ---
-gh() {
-  local __gh_token
-  __gh_token="$(/opt/agent-devcontainer/gh-app-token.sh)" || return 1
-  GH_TOKEN="$__gh_token" command gh "$@"
-}
-EOF
-fi
-# --- End gh CLI App authentication ------------------------------------------
-
 # Never fall back to an interactive username/password prompt if the App
 # credential helper above fails (stale GH_OWNER after a repo moves orgs, an
 # expired/missing App key, a network blip, ...) — git must error loudly

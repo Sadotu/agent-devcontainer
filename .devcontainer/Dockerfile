@@ -103,6 +103,7 @@ COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
         codex-auth-sync.sh dotagents-install.sh refresh-skills.sh \
         start-worktree-warden.sh worktree-warden-summary.sh deny-merge.sh \
         /opt/agent-devcontainer/
+COPY gh.sh /usr/local/bin/gh
 # Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
 # codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
 COPY lib/bw-session.sh /opt/agent-devcontainer/lib/bw-session.sh
@@ -123,7 +124,8 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/start-worktree-warden.sh \
         /opt/agent-devcontainer/worktree-warden-summary.sh \
         /opt/agent-devcontainer/deny-merge.sh \
-        /opt/agent-devcontainer/githooks/pre-push
+        /opt/agent-devcontainer/githooks/pre-push \
+    && chmod 0755 /usr/local/bin/gh
 
 # Project scaffolder + the two per-project files it emits.
 # `dc` and devcontainer.json must exist in a project BEFORE any container can

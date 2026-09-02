@@ -9,20 +9,10 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# Exercise the real BashRC-emission block twice, then load its output in fresh
-# shells against controlled token-helper and gh binaries.
-run_gh_wrapper_setup() { # <bashrc-path> <tooldir>
-  BASHRC="$1"
-  TOOLDIR="$2"
-  export BASHRC TOOLDIR
-  sed -n '/^# --- gh CLI App authentication/,/^# --- End gh CLI App authentication/p' "$SETUP" \
-    | source /dev/stdin
-}
-
-GH_HOME="$TMP/gh-home"
+# Exercise the installed executable in fresh shells, so App auth is independent
+# of shell startup files.
 GH_TOOLDIR="$TMP/gh-tools"
-mkdir -p "$GH_HOME" "$GH_TOOLDIR" "$TMP/bin"
-: >"$GH_HOME/.bashrc"
+mkdir -p "$GH_TOOLDIR" "$TMP/bin"
 
 cat >"$GH_TOOLDIR/gh-app-token.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -30,22 +20,33 @@ printf 'test-app-token\n'
 EOF
 chmod +x "$GH_TOOLDIR/gh-app-token.sh"
 
-cat >"$TMP/bin/gh" <<'EOF'
+cat >"$TMP/bin/real-gh" <<'EOF'
 #!/usr/bin/env bash
-printf 'token=%s args=%s\n' "${GH_TOKEN:-}" "$*"
+printf 'token=%s argc=%s\n' "${GH_TOKEN:-}" "$#"
+for arg in "$@"; do
+  printf 'arg=<%s>\n' "$arg"
+done
 EOF
+chmod +x "$TMP/bin/real-gh"
+
+cp "$ROOT/.devcontainer/gh.sh" "$TMP/bin/gh"
+sed -i "s|/opt/agent-devcontainer/gh-app-token.sh|$GH_TOOLDIR/gh-app-token.sh|; s|/usr/bin/gh|$TMP/bin/real-gh|" "$TMP/bin/gh"
 chmod +x "$TMP/bin/gh"
 
-run_gh_wrapper_setup "$GH_HOME/.bashrc" "$GH_TOOLDIR"
-run_gh_wrapper_setup "$GH_HOME/.bashrc" "$GH_TOOLDIR"
-sed -i "s|/opt/agent-devcontainer/gh-app-token.sh|$GH_TOOLDIR/gh-app-token.sh|" "$GH_HOME/.bashrc"
+for shell in sh bash zsh; do
+  OUT="$(PATH="$TMP/bin:$PATH" "$shell" -c 'gh issue list "title with spaces"')" \
+    || fail "$shell shim invocation failed ($OUT)"
+  [ "$OUT" = $'token=test-app-token argc=3\narg=<issue>\narg=<list>\narg=<title with spaces>' ] \
+    || fail "$shell shim did not pass minted token to real gh ($OUT)"
+done
 
-OUT="$(HOME="$GH_HOME" PATH="$TMP/bin:$PATH" bash -ic 'gh issue list' 2>/dev/null)" \
-  || fail "generated gh wrapper did not run ($OUT)"
-[ "$OUT" = 'token=test-app-token args=issue list' ] \
-  || fail "generated gh wrapper did not pass minted token to real gh ($OUT)"
-[ "$(grep -c '^gh() {' "$GH_HOME/.bashrc")" -eq 1 ] \
-  || fail "gh wrapper was not appended idempotently"
+XTRACE_LOG="$TMP/gh-xtrace.log"
+OUT="$(env PATH="$TMP/bin:$PATH" SHELLOPTS=xtrace "$TMP/bin/gh" issue list "title with spaces" 2>"$XTRACE_LOG")" \
+  || fail "xtrace shim invocation failed ($OUT)"
+[ "$OUT" = $'token=test-app-token argc=3\narg=<issue>\narg=<list>\narg=<title with spaces>' ] \
+  || fail "xtrace shim did not pass minted token to real gh ($OUT)"
+! grep -Fq 'test-app-token' "$XTRACE_LOG" \
+  || fail "xtrace leaked minted token ($(cat "$XTRACE_LOG"))"
 
 cat >"$GH_TOOLDIR/gh-app-token.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -55,10 +56,10 @@ EOF
 chmod +x "$GH_TOOLDIR/gh-app-token.sh"
 
 set +e
-OUT="$(HOME="$GH_HOME" PATH="$TMP/bin:$PATH" bash -ic 'gh issue list' 2>&1)"
+OUT="$(PATH="$TMP/bin:$PATH" bash -c 'gh issue list' 2>&1)"
 STATUS=$?
 set -e
-[ "$STATUS" -eq 1 ] || fail "token-helper failure returned $STATUS instead of 1"
+[ "$STATUS" -eq 23 ] || fail "token-helper failure returned $STATUS instead of 23"
 grep -Fq 'APP TOKEN FAILURE' <<<"$OUT" || fail "token-helper error was hidden ($OUT)"
 ! grep -Fq 'token=' <<<"$OUT" || fail "real gh ran after token-helper failure ($OUT)"
 
