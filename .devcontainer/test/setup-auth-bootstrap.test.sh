@@ -30,12 +30,20 @@ cp "$ROOT/.devcontainer/gh.sh" "$TMP/bin/gh"
 sed -i "s|/opt/agent-devcontainer/gh-app-token.sh|$GH_TOOLDIR/gh-app-token.sh|; s|/usr/bin/gh|$TMP/bin/real-gh|" "$TMP/bin/gh"
 chmod +x "$TMP/bin/gh"
 
-for shell in bash zsh; do
+for shell in sh bash zsh; do
   OUT="$(PATH="$TMP/bin:$PATH" "$shell" -c 'gh issue list')" \
     || fail "$shell shim invocation failed ($OUT)"
   [ "$OUT" = 'token=test-app-token args=issue list' ] \
     || fail "$shell shim did not pass minted token to real gh ($OUT)"
 done
+
+XTRACE_LOG="$TMP/gh-xtrace.log"
+OUT="$(env PATH="$TMP/bin:$PATH" SHELLOPTS=xtrace "$TMP/bin/gh" issue list 2>"$XTRACE_LOG")" \
+  || fail "xtrace shim invocation failed ($OUT)"
+[ "$OUT" = 'token=test-app-token args=issue list' ] \
+  || fail "xtrace shim did not pass minted token to real gh ($OUT)"
+! grep -Fq 'test-app-token' "$XTRACE_LOG" \
+  || fail "xtrace leaked minted token ($(cat "$XTRACE_LOG"))"
 
 cat >"$GH_TOOLDIR/gh-app-token.sh" <<'EOF'
 #!/usr/bin/env bash
