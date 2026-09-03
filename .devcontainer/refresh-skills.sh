@@ -43,30 +43,263 @@ fi
 # run (#92 Scope) — a per-run branch would pile up unmergeable PRs once the
 # trigger is every container start rather than create-only/rare (#79).
 BUMP_BRANCH="agent/agents-lock-upgrade"
+git_common_dir="$(git -C "$WORKSPACE" rev-parse --git-common-dir 2>/dev/null)"
+case "$git_common_dir" in
+  /*) ;;
+  *) git_common_dir="$WORKSPACE/$git_common_dir" ;;
+esac
+# Keep the lock in this repository's common Git directory so every linked
+# worktree shares it, while unrelated repositories never block each other.
+# It covers fetch, resolution, worktree lifecycle, and publication: postCreate
+# and postStart may overlap, and all of those steps share refs or remote state.
+BUMP_FLOCK="$git_common_dir/agents-lock-bump.flock"
+BUMP_WT="$git_common_dir/agents-lock-refresh-worktree"
+PRIMARY_LOCK_STATE="$git_common_dir/agents-lock-primary-state"
+INSTALL_OUTPUT="$git_common_dir/agents-lock-install-output"
+ACTIVE_INSTALL_FILE="$git_common_dir/agents-lock-active-install"
+ACTIVE_INSTALL_PID=""
+ACTIVE_INSTALL_START=""
+ACTIVE_INSTALL_SUPERVISOR_PID=""
 
-maybe_bump_agents_lock() {
-  # Only when primary is on main and the refresh left agents.lock dirty — a
-  # feature branch's dirty lock is the user's own in-progress state.
-  [ "$(git -C "$WORKSPACE" branch --show-current)" = main ] || return 0
-  git -C "$WORKSPACE" diff --quiet -- agents.lock && return 0
+proc_start_identity() {
+  local stat rest
+  IFS= read -r stat < "/proc/$1/stat" || return 1
+  rest="${stat##*) }"
+  set -- $rest
+  [ "$#" -ge 20 ] || return 1
+  printf '%s\n' "${20}"
+}
 
-  local bump_lock bump_wt bump_pr_url="" existing_pr=""
-  bump_lock="$(mktemp)"
-  bump_wt="$(mktemp -d)"
-  rmdir "$bump_wt"
-  cp "$WORKSPACE/agents.lock" "$bump_lock"
+stop_active_install() {
+  local pid="${ACTIVE_INSTALL_PID:-}" start="${ACTIVE_INSTALL_START:-}" current_start attempt
+  if [ -z "$pid" ] && [ -s "$ACTIVE_INSTALL_FILE" ]; then
+    read -r pid start < "$ACTIVE_INSTALL_FILE" || pid=""
+  fi
+  case "$pid:$start" in
+    *[!0-9:]*|:*|*:) pid="" ;;
+    *)
+      current_start="$(proc_start_identity "$pid" 2>/dev/null)" || current_start=""
+      if [ "$current_start" != "$start" ] || [ ! -r "/proc/$pid/cmdline" ] ||
+         ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$TOOLDIR/dotagents-install.sh"; then
+        pid=""
+      fi
+      ;;
+  esac
+  if [ -z "$pid" ]; then
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_PID=""
+    ACTIVE_INSTALL_START=""
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 0
+  fi
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  for attempt in $(seq 1 50); do
+    kill -0 -- "-$pid" 2>/dev/null || break
+    sleep 0.02
+  done
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  if [ -n "${ACTIVE_INSTALL_SUPERVISOR_PID:-}" ]; then
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+  else
+    wait "$pid" 2>/dev/null || true
+  fi
+  for attempt in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.02
+  done
+  rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+  ACTIVE_INSTALL_PID=""
+  ACTIVE_INSTALL_START=""
+  ACTIVE_INSTALL_SUPERVISOR_PID=""
+}
 
-  # Unlike the old timestamped-per-run branch (always fresh), a fixed branch
-  # can collide with a leftover worktree entry from an interrupted prior run.
+install_dotagents() {
+  local WORKSPACE="$1" status=0 ready pid start recorded_pid recorded_start
+  local ready_fd ack_fd
+  : > "$INSTALL_OUTPUT" || return 1
+
+  # Keep fd 200 in the new process group until its PID and kernel start time
+  # are durably registered and the parent acknowledges that registration.
+  # If the parent crashes first, pipe EOF makes the child exit while it still
+  # owns the flock, so a restart cannot overlap an unregistered installer.
+  coproc INSTALL_SUPERVISOR {
+    read -r launch || exit 0
+    [ "$launch" = launch ] || exit 1
+    exec setsid --wait bash -c '
+      active_file="$1"
+      output_file="$2"
+      timeout_secs="$3"
+      helper="$4"
+      workspace="$5"
+      tooldir="$6"
+      pid="$BASHPID"
+      IFS= read -r stat < "/proc/$pid/stat" || exit 1
+      rest="${stat##*) }"
+      set -- $rest
+      [ "$#" -ge 20 ] || exit 1
+      start="${20}"
+      printf "%s %s\n" "$pid" "$start" > "$active_file.handoff" || exit 1
+      mv -f "$active_file.handoff" "$active_file" || exit 1
+      printf "ready %s %s\n" "$pid" "$start" || exit 0
+      read -r command ack_pid ack_start || exit 0
+      [ "$command" = close ] && [ "$ack_pid" = "$pid" ] && [ "$ack_start" = "$start" ] || exit 1
+      exec >"$output_file" 2>&1
+      exec 200>&-
+      exec timeout --kill-after=5 "$timeout_secs" "$helper" "$workspace" "$tooldir"
+    ' _ "$ACTIVE_INSTALL_FILE" "$INSTALL_OUTPUT" "$timeout_secs" \
+      "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
+  } 200>&200
+  ACTIVE_INSTALL_SUPERVISOR_PID=$INSTALL_SUPERVISOR_PID
+  ready_fd=${INSTALL_SUPERVISOR[0]}
+  ack_fd=${INSTALL_SUPERVISOR[1]}
+
+  if ! printf 'launch\n' >&"$ack_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  if ! read -r ready pid start <&"$ready_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  if [ -n "${INSTALL_HANDOFF_DELAY_SECS:-}" ]; then
+    sleep "$INSTALL_HANDOFF_DELAY_SECS"
+  fi
+  read -r recorded_pid recorded_start < "$ACTIVE_INSTALL_FILE" || recorded_pid=""
+  if [ "$ready" != ready ] || [ "$pid" != "$recorded_pid" ] || [ "$start" != "$recorded_start" ] ||
+     [ "$(proc_start_identity "$pid" 2>/dev/null)" != "$start" ]; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  ACTIVE_INSTALL_PID=$pid
+  ACTIVE_INSTALL_START=$start
+  if ! printf 'close %s %s\n' "$pid" "$start" >&"$ack_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    stop_active_install
+    return 1
+  fi
+  exec {ready_fd}<&-
+  exec {ack_fd}>&-
+  wait "$ACTIVE_INSTALL_SUPERVISOR_PID" || status=$?
+  rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+  ACTIVE_INSTALL_PID=""
+  ACTIVE_INSTALL_START=""
+  ACTIVE_INSTALL_SUPERVISOR_PID=""
+  sed 's/^/    /' "$INSTALL_OUTPUT"
+  rm -f "$INSTALL_OUTPUT"
+  return "$status"
+}
+
+restore_primary_lock() {
+  [ -d "$PRIMARY_LOCK_STATE" ] || return 0
+  if [ ! -e "$PRIMARY_LOCK_STATE/ready" ]; then
+    rm -rf "$PRIMARY_LOCK_STATE"
+    return 0
+  fi
+
+  if [ -e "$PRIMARY_LOCK_STATE/had-lock" ]; then
+    cp -p "$PRIMARY_LOCK_STATE/agents.lock" "$WORKSPACE/agents.lock" || return 1
+  else
+    rm -f "$WORKSPACE/agents.lock" || return 1
+  fi
+  rm -rf "$PRIMARY_LOCK_STATE"
+}
+
+save_primary_lock() {
+  rm -rf "$PRIMARY_LOCK_STATE"
+  mkdir "$PRIMARY_LOCK_STATE" || return 1
+  if [ -e "$WORKSPACE/agents.lock" ]; then
+    cp -p "$WORKSPACE/agents.lock" "$PRIMARY_LOCK_STATE/agents.lock" || return 1
+    : > "$PRIMARY_LOCK_STATE/had-lock"
+  fi
+  : > "$PRIMARY_LOCK_STATE/ready"
+}
+
+cleanup_resolution_worktree() {
+  git -C "$WORKSPACE" worktree remove "$BUMP_WT" --force 2>/dev/null || true
+  [ ! -e "$BUMP_WT" ] || rm -rf "$BUMP_WT"
   git -C "$WORKSPACE" worktree prune 2>/dev/null || true
-  if git -C "$WORKSPACE" worktree add -q -B "$BUMP_BRANCH" "$bump_wt" main \
-      >/tmp/agents-lock-bump.log 2>&1 && \
-     cp "$bump_lock" "$bump_wt/agents.lock" && \
-     git -C "$bump_wt" add agents.lock && \
+}
+
+cleanup_refresh_state() {
+  stop_active_install
+  rm -f "$INSTALL_OUTPUT"
+  restore_primary_lock || \
+    echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+  cleanup_resolution_worktree
+}
+
+materialize_runtime_skills() {
+  local status=0
+  if ! save_primary_lock; then
+    echo "WARNING: could not preserve agents.lock in the primary worktree — self-authored skills unavailable this run."
+    return 0
+  fi
+
+  install_dotagents "$WORKSPACE" || status=$?
+  restore_primary_lock || \
+    echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
+  elif [ "$status" -ne 0 ]; then
+    echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
+  fi
+}
+
+resolve_and_bump_agents_lock() {
+  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status
+  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
+  if ! git -C "$WORKSPACE" worktree add -q --detach "$bump_wt" origin/main \
+      >>/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: agents.lock refresh failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+  if ! cp "$bump_wt/.devcontainer/agents.toml" "$bump_wt/agents.toml" \
+      >>/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: agents.lock refresh failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
+  if install_dotagents "$bump_wt"; then
+    if git -C "$bump_wt" diff --quiet -- agents.lock; then
+      return 0
+    fi
+  else
+    status=$?
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
+    else
+      echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
+    fi
+    return 0
+  fi
+
+  # Commit the detached resolution and publish it directly to the one fixed
+  # remote branch. No local bump branch exists, so interrupted old worktrees
+  # cannot pin that branch or influence the generated lock.
+  if git -C "$bump_wt" add agents.lock && \
      git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
        commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
-     git -C "$bump_wt" push -qf -u origin "$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
+     git -C "$bump_wt" push -qf origin "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
     existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list \
       --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
       --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)" || existing_pr=""
@@ -80,29 +313,35 @@ maybe_bump_agents_lock() {
         2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
     fi
   fi
-  git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
-  rm -f "$bump_lock"
   if [ -n "$bump_pr_url" ]; then
     echo "WARNING: agents.lock changed (skills re-resolved) — see $bump_pr_url"
   else
     echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
   fi
-  git -C "$WORKSPACE" checkout -- agents.lock || \
-    echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
+}
+
+refresh_agents_lock() {
+  (
+    flock -w 300 200 || {
+      echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
+      exit 0
+    }
+    trap 'stop_active_install; exit 0' INT TERM
+    trap cleanup_refresh_state EXIT
+    stop_active_install
+    if ! restore_primary_lock; then
+      echo "WARNING: could not recover agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+      exit 0
+    fi
+    cleanup_resolution_worktree
+    materialize_runtime_skills
+    resolve_and_bump_agents_lock
+  ) 200>"$BUMP_FLOCK"
 }
 
 echo "==> Self-authored skills (dotagents)"
 # Bounded so a hung download can never wedge container start (postStart) or
 # postCreate. REFRESH_SKILLS_TIMEOUT overrides the 120s default for tests.
 timeout_secs="${REFRESH_SKILLS_TIMEOUT:-120}"
-if timeout "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'; then
-  maybe_bump_agents_lock
-else
-  status=$?
-  if [ "$status" -eq 124 ]; then
-    echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
-  else
-    echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
-  fi
-fi
+refresh_agents_lock
 exit 0
