@@ -53,23 +53,82 @@ esac
 # It covers fetch, resolution, worktree lifecycle, and publication: postCreate
 # and postStart may overlap, and all of those steps share refs or remote state.
 BUMP_FLOCK="$git_common_dir/agents-lock-bump.flock"
+BUMP_WT="$git_common_dir/agents-lock-refresh-worktree"
+PRIMARY_LOCK_STATE="$git_common_dir/agents-lock-primary-state"
 
 install_dotagents() {
   local WORKSPACE="$1"
-  timeout "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
+  timeout --foreground "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
+}
+
+restore_primary_lock() {
+  [ -d "$PRIMARY_LOCK_STATE" ] || return 0
+  if [ ! -e "$PRIMARY_LOCK_STATE/ready" ]; then
+    rm -rf "$PRIMARY_LOCK_STATE"
+    return 0
+  fi
+
+  if [ -e "$PRIMARY_LOCK_STATE/had-lock" ]; then
+    cp -p "$PRIMARY_LOCK_STATE/agents.lock" "$WORKSPACE/agents.lock" || return 1
+  else
+    rm -f "$WORKSPACE/agents.lock" || return 1
+  fi
+  rm -rf "$PRIMARY_LOCK_STATE"
+}
+
+save_primary_lock() {
+  rm -rf "$PRIMARY_LOCK_STATE"
+  mkdir "$PRIMARY_LOCK_STATE" || return 1
+  if [ -e "$WORKSPACE/agents.lock" ]; then
+    cp -p "$WORKSPACE/agents.lock" "$PRIMARY_LOCK_STATE/agents.lock" || return 1
+    : > "$PRIMARY_LOCK_STATE/had-lock"
+  fi
+  : > "$PRIMARY_LOCK_STATE/ready"
+}
+
+cleanup_resolution_worktree() {
+  git -C "$WORKSPACE" worktree remove "$BUMP_WT" --force 2>/dev/null || true
+  [ ! -e "$BUMP_WT" ] || rm -rf "$BUMP_WT"
+  git -C "$WORKSPACE" worktree prune 2>/dev/null || true
+}
+
+cleanup_refresh_state() {
+  restore_primary_lock || \
+    echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+  cleanup_resolution_worktree
+}
+
+materialize_runtime_skills() {
+  local status=0
+  if ! save_primary_lock; then
+    echo "WARNING: could not preserve agents.lock in the primary worktree — self-authored skills unavailable this run."
+    return 0
+  fi
+
+  install_dotagents "$WORKSPACE" 2>&1 | sed 's/^/    /' || status=$?
+  restore_primary_lock || \
+    echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
+  elif [ "$status" -ne 0 ]; then
+    echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
+  fi
 }
 
 resolve_and_bump_agents_lock() {
-  local bump_wt bump_pr_url="" existing_pr="" status
+  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status
   if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
     echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
     return 0
   fi
 
-  bump_wt="$(mktemp -d)"
-  rmdir "$bump_wt"
-  git -C "$WORKSPACE" worktree prune 2>/dev/null || true
   if ! git -C "$WORKSPACE" worktree add -q --detach "$bump_wt" origin/main \
+      >>/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: agents.lock refresh failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+  if ! cp "$bump_wt/.devcontainer/agents.toml" "$bump_wt/agents.toml" \
       >>/tmp/agents-lock-bump.log 2>&1; then
     echo "WARNING: agents.lock refresh failed — see /tmp/agents-lock-bump.log."
     return 0
@@ -77,12 +136,10 @@ resolve_and_bump_agents_lock() {
 
   if install_dotagents "$bump_wt" 2>&1 | sed 's/^/    /'; then
     if git -C "$bump_wt" diff --quiet -- agents.lock; then
-      git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
       return 0
     fi
   else
     status=$?
-    git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
     if [ "$status" -eq 124 ]; then
       echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
     else
@@ -112,7 +169,6 @@ resolve_and_bump_agents_lock() {
         2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
     fi
   fi
-  git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
   if [ -n "$bump_pr_url" ]; then
     echo "WARNING: agents.lock changed (skills re-resolved) — see $bump_pr_url"
   else
@@ -126,6 +182,14 @@ refresh_agents_lock() {
       echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
       exit 0
     }
+    trap 'exit 0' INT TERM
+    trap cleanup_refresh_state EXIT
+    if ! restore_primary_lock; then
+      echo "WARNING: could not recover agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+      exit 0
+    fi
+    cleanup_resolution_worktree
+    materialize_runtime_skills
     resolve_and_bump_agents_lock
   ) 200>"$BUMP_FLOCK"
 }
