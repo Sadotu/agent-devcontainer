@@ -28,11 +28,11 @@ GitHub App ID) and `private-key-b64` (base64-encoded private key, for example
 GitHub App key; no `.pem` is written to the host.
 
 Claude workers need `CLAUDE_CODE_OAUTH_TOKEN` exported before `./.devcontainer/dc up` (create
-it with `claude setup-token`), or a Bitwarden item named
-`claude-code-oauth-token` containing the token in Notes. Codex workers need
-Bitwarden item `codex-auth-token` with `~/.codex/auth.json` in Notes. To repair,
-inside the container run `codex login --device-auth`, exit, then on the host run
-`./.devcontainer/dc codex-push`.
+it with `claude setup-token`), or a Bitwarden item named `claude-code-oauth-token`
+containing the token in Notes — editing that item alone does nothing until `dc claude-pull`
+refreshes the container (`dc claude-push` stores it back). Codex workers need Bitwarden
+item `codex-auth-token` with `~/.codex/auth.json` in Notes. To repair, inside the
+container run `codex login --device-auth`, exit, then on the host run `./.devcontainer/dc codex-push`.
 
 ## Daily use
 
@@ -48,8 +48,8 @@ Common commands:
 ./.devcontainer/dc exec <command>  # one-off command in container
 ./.devcontainer/dc setup            # retry credentials/setup
 ./.devcontainer/dc down             # stop/remove container; volumes remain
-./.devcontainer/dc codex-push       # container auth -> Bitwarden + host
-./.devcontainer/dc codex-pull --force # Bitwarden auth -> container + host
+./.devcontainer/dc codex-push / codex-pull --force  # Codex auth <-> Bitwarden + host
+./.devcontainer/dc claude-push / claude-pull        # Claude oauth-env <-> Bitwarden
 ./.devcontainer/test-all.sh [IMAGE_TAG] # run all suites; omit tag for source-only
 ```
 

@@ -108,12 +108,13 @@ RUN mkdir -p -m 0755 /run/agent-devcontainer \
 # project's thin devcontainer.json points here rather than at a per-project
 # copy, so updates to these scripts ship by rebuilding this image.
 COPY setup-agents.sh gh-app-token.sh git-credential-github-app.sh \
-        codex-auth-sync.sh dotagents-install.sh refresh-skills.sh \
+        codex-auth-sync.sh claude-auth-sync.sh dotagents-install.sh refresh-skills.sh \
         start-worktree-warden.sh worktree-warden-summary.sh deny-merge.sh \
         /opt/agent-devcontainer/
 COPY gh.sh /usr/local/bin/gh
-# Sourceable Bitwarden-session plumbing shared by setup-agents.sh and
-# codex-auth-sync.sh (dc codex-push / codex-pull). Sourced, not executed.
+# Sourceable Bitwarden-session plumbing shared by setup-agents.sh,
+# codex-auth-sync.sh (dc codex-push / codex-pull), and claude-auth-sync.sh
+# (dc claude-push / claude-pull). Sourced, not executed.
 COPY lib/bw-session.sh /opt/agent-devcontainer/lib/bw-session.sh
 # Sourceable readiness-marker plumbing used by setup-agents.sh. Sourced, not
 # executed — no chmod +x needed (same as bw-session.sh).
@@ -127,6 +128,7 @@ RUN chmod +x /opt/agent-devcontainer/setup-agents.sh \
         /opt/agent-devcontainer/gh-app-token.sh \
         /opt/agent-devcontainer/git-credential-github-app.sh \
         /opt/agent-devcontainer/codex-auth-sync.sh \
+        /opt/agent-devcontainer/claude-auth-sync.sh \
         /opt/agent-devcontainer/dotagents-install.sh \
         /opt/agent-devcontainer/refresh-skills.sh \
         /opt/agent-devcontainer/start-worktree-warden.sh \

@@ -16,6 +16,15 @@ harness default that adds such lines.
 You are already inside a Linux container. Run commands directly — do **not**
 prefix them with `wsl -d Ubuntu`.
 
+## Claude OAuth credentials
+
+Claude workers need `CLAUDE_CODE_OAUTH_TOKEN` exported before
+`./.devcontainer/dc up`, or a Bitwarden item named `claude-code-oauth-token`
+containing the token in Notes. Editing Bitwarden Notes does not automatically
+update the container; run `./.devcontainer/dc claude-pull` to refresh it.
+`./.devcontainer/dc claude-push` stores the container's current token back in
+Bitwarden.
+
 ## Skills
 
 Reusable skills live in `.agents/skills/<name>/SKILL.md`. When the user
