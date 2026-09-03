@@ -43,25 +43,57 @@ fi
 # run (#92 Scope) — a per-run branch would pile up unmergeable PRs once the
 # trigger is every container start rather than create-only/rare (#79).
 BUMP_BRANCH="agent/agents-lock-upgrade"
+# Serializes the worktree/branch/push sequence below across concurrent
+# refresh-skills.sh runs (postCreate + postStart can overlap) — two `git
+# worktree add -B` calls for the same branch race/corrupt otherwise (#108).
+BUMP_FLOCK="${TMPDIR:-/tmp}/agents-lock-bump.flock"
 
 maybe_bump_agents_lock() {
-  # Only when primary is on main and the refresh left agents.lock dirty — a
-  # feature branch's dirty lock is the user's own in-progress state.
-  [ "$(git -C "$WORKSPACE" branch --show-current)" = main ] || return 0
-  git -C "$WORKSPACE" diff --quiet -- agents.lock && return 0
+  # dotagents-install.sh just resolved skill pins into agents.lock in the
+  # primary worktree, on whatever branch happens to be checked out there.
+  # That resolution is a transient side effect of installing runtime
+  # skills, not the source of truth for the automated bump PR — always
+  # restore the primary worktree's tracked agents.lock afterward, on any
+  # branch, and decide independently whether origin/main needs a bump PR
+  # (#108: previously this only ran when primary was on main, so a feature
+  # branch was left dirty).
+  local resolved_lock=""
+  if ! git -C "$WORKSPACE" diff --quiet -- agents.lock; then
+    resolved_lock="$(mktemp)"
+    cp "$WORKSPACE/agents.lock" "$resolved_lock"
+  fi
+  git -C "$WORKSPACE" checkout -- agents.lock || \
+    echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
+  [ -n "$resolved_lock" ] || return 0
 
-  local bump_lock bump_wt bump_pr_url="" existing_pr=""
-  bump_lock="$(mktemp)"
+  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: agents.lock changed but fetching origin/main failed — see /tmp/agents-lock-bump.log."
+    rm -f "$resolved_lock"
+    return 0
+  fi
+  if git -C "$WORKSPACE" show origin/main:agents.lock 2>/dev/null | cmp -s - "$resolved_lock"; then
+    rm -f "$resolved_lock"
+    return 0
+  fi
+
+  (
+    flock -w 300 200 || { echo "WARNING: agents.lock changed but a concurrent refresh held the bump lock too long — see /tmp/agents-lock-bump.log."; exit 0; }
+    bump_agents_lock_pr "$resolved_lock"
+  ) 200>"$BUMP_FLOCK"
+  rm -f "$resolved_lock"
+}
+
+bump_agents_lock_pr() {
+  local resolved_lock="$1" bump_wt bump_pr_url="" existing_pr=""
   bump_wt="$(mktemp -d)"
   rmdir "$bump_wt"
-  cp "$WORKSPACE/agents.lock" "$bump_lock"
 
   # Unlike the old timestamped-per-run branch (always fresh), a fixed branch
   # can collide with a leftover worktree entry from an interrupted prior run.
   git -C "$WORKSPACE" worktree prune 2>/dev/null || true
-  if git -C "$WORKSPACE" worktree add -q -B "$BUMP_BRANCH" "$bump_wt" main \
+  if git -C "$WORKSPACE" worktree add -q -B "$BUMP_BRANCH" "$bump_wt" origin/main \
       >/tmp/agents-lock-bump.log 2>&1 && \
-     cp "$bump_lock" "$bump_wt/agents.lock" && \
+     cp "$resolved_lock" "$bump_wt/agents.lock" && \
      git -C "$bump_wt" add agents.lock && \
      git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
@@ -81,14 +113,11 @@ maybe_bump_agents_lock() {
     fi
   fi
   git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
-  rm -f "$bump_lock"
   if [ -n "$bump_pr_url" ]; then
     echo "WARNING: agents.lock changed (skills re-resolved) — see $bump_pr_url"
   else
     echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
   fi
-  git -C "$WORKSPACE" checkout -- agents.lock || \
-    echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
 }
 
 echo "==> Self-authored skills (dotagents)"

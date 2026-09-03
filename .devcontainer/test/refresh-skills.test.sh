@@ -237,29 +237,83 @@ grep -Fq 'pr create' "$GH_LOG" && fail "case 7: gh pr create should not run when
   fail "case 7: primary agents.lock was not restored"
 
 # =========================================================================
-# Case 8: not on main -> entire bump block skipped, agents.lock left dirty
-# (user's own in-progress state), no gh calls, no WARNING.
+# Case 8 (#108): primary on a feature branch, resolution differs from what
+# that branch has tracked -> the bump PR still fires (comparison is against
+# origin/main, not the current branch), and the primary worktree is
+# restored to its own tracked content (never left dirty), whichever branch
+# it's on.
 # =========================================================================
 reset_workspace
-git -C "$WORKSPACE_DIR" checkout -qb feature
+git -C "$WORKSPACE_DIR" checkout -qB feature
 run NEW_LOCK_CONTENT=new-lock-v3
 [[ $STATUS -eq 0 ]] || fail "case 8: exited $STATUS, expected 0: $OUT"
-[[ "$(gh_call_count)" -eq 0 ]] || fail "case 8: gh was called on a non-main branch: $(cat "$GH_LOG")"
-[[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "new-lock-v3" ]] || \
-  fail "case 8: agents.lock should have been left as the feature branch's own state"
-[[ "$OUT" != *WARNING* ]] || fail "case 8: unexpected WARNING on a non-main branch: $OUT"
+grep -Fq 'pr create' "$GH_LOG" || fail "case 8: expected gh pr create to run on a feature branch: $(cat "$GH_LOG")"
+[[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \
+  fail "case 8: primary agents.lock was not restored to its own tracked content"
+[[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
+  fail "case 8: primary worktree left dirty on a feature branch: $(git -C "$WORKSPACE_DIR" status --porcelain)"
+[[ "$OUT" == *"https://github.com/fake/repo/pull/999"* ]] || fail "case 8: expected the PR URL reported: $OUT"
 git -C "$WORKSPACE_DIR" checkout -q main
 
 # =========================================================================
-# Case 9: git push fails -> "auto-PR failed" WARNING, agents.lock still
+# Case 9 (#108): a feature branch's own committed agents.lock edit already
+# matches what installation resolves to -> no diff is detected against the
+# branch's own tracked file, so the bump is never computed and the edit is
+# left exactly as the branch committed it (never folded into the automated
+# PR against origin/main, which still differs).
+# =========================================================================
+reset_workspace
+git -C "$WORKSPACE_DIR" checkout -qB feature
+printf 'feature-lock\n' > "$WORKSPACE_DIR/agents.lock"
+git -C "$WORKSPACE_DIR" add agents.lock
+git -C "$WORKSPACE_DIR" -c user.email=test@example.com -c user.name=Test \
+  commit -qm "feature: pin agents.lock"
+: > "$GH_LOG"; : > "$TOKEN_LOG"; : > "$GIT_PUSH_LOG"; : > "$DOTAGENTS_LOG"
+run NEW_LOCK_CONTENT=feature-lock
+[[ $STATUS -eq 0 ]] || fail "case 9: exited $STATUS, expected 0: $OUT"
+[[ "$(gh_call_count)" -eq 0 ]] || fail "case 9: gh was called despite no diff against the branch's own tracked lock: $(cat "$GH_LOG")"
+[[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "feature-lock" ]] || \
+  fail "case 9: feature branch's own agents.lock edit was disturbed"
+[[ "$OUT" != *WARNING* ]] || fail "case 9: unexpected WARNING with no local diff: $OUT"
+git -C "$WORKSPACE_DIR" checkout -q main
+
+# =========================================================================
+# Case 10: git push fails -> "auto-PR failed" WARNING, agents.lock still
 # restored, gh pr create never reached.
 # =========================================================================
 reset_workspace
 run NEW_LOCK_CONTENT=new-lock-v4 GIT_PUSH_FAILS=1
-[[ $STATUS -eq 0 ]] || fail "case 9: exited $STATUS, expected 0: $OUT"
-[[ "$OUT" == *"auto-PR failed"* ]] || fail "case 9: expected an auto-PR-failed warning, got: $OUT"
-grep -Fq 'pr create' "$GH_LOG" && fail "case 9: gh pr create should not run after a failed push: $(cat "$GH_LOG")"
+[[ $STATUS -eq 0 ]] || fail "case 10: exited $STATUS, expected 0: $OUT"
+[[ "$OUT" == *"auto-PR failed"* ]] || fail "case 10: expected an auto-PR-failed warning, got: $OUT"
+grep -Fq 'pr create' "$GH_LOG" && fail "case 10: gh pr create should not run after a failed push: $(cat "$GH_LOG")"
 [[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \
-  fail "case 9: primary agents.lock was not restored after a failed push"
+  fail "case 10: primary agents.lock was not restored after a failed push"
+
+# =========================================================================
+# Case 11 (#108): two refresh runs racing the same bump branch (postCreate
+# and postStart overlapping) serialize instead of corrupting the shared
+# `git worktree add -B` — both exit 0, and only one worktree entry for the
+# bump branch survives.
+# =========================================================================
+reset_workspace
+STATUS_A_FILE="$TMP/status-a"
+STATUS_B_FILE="$TMP/status-b"
+run_bg() {
+  local status_file="$1"; shift
+  env "$@" WORKSPACE="$WORKSPACE_DIR" TOOLDIR="$STUB_DIR" PROJECT_NAME=proj GH_OWNER=owner \
+    GITHUB_APP_DIR="$GITHUB_APP_DIR" GH_LOG="$GH_LOG" TOKEN_LOG="$TOKEN_LOG" GIT_PUSH_LOG="$GIT_PUSH_LOG" \
+    DOTAGENTS_LOG="$DOTAGENTS_LOG" PATH="$STUB_PATH" \
+    bash "$TEST_SCRIPT" >/dev/null 2>&1
+  echo $? > "$status_file"
+}
+run_bg "$STATUS_A_FILE" NEW_LOCK_CONTENT=new-lock-race-a &
+run_bg "$STATUS_B_FILE" NEW_LOCK_CONTENT=new-lock-race-b &
+wait
+[[ "$(cat "$STATUS_A_FILE")" -eq 0 ]] || fail "case 11: concurrent run A exited nonzero"
+[[ "$(cat "$STATUS_B_FILE")" -eq 0 ]] || fail "case 11: concurrent run B exited nonzero"
+[[ "$(git -C "$WORKSPACE_DIR" worktree list | grep -c 'agent/agents-lock-upgrade' 2>/dev/null || true)" -le 1 ]] || \
+  fail "case 11: more than one worktree entry survived a concurrent bump"
+[[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
+  fail "case 11: primary worktree left dirty after a concurrent bump: $(git -C "$WORKSPACE_DIR" status --porcelain)"
 
 echo "PASS: refresh-skills.test.sh"
