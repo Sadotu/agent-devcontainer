@@ -20,6 +20,8 @@ GH_LOG="$TMP/gh.log"
 TOKEN_LOG="$TMP/token.log"
 GIT_PUSH_LOG="$TMP/git-push.log"
 DOTAGENTS_LOG="$TMP/dotagents.log"
+DOTAGENTS_INPUT_LOG="$TMP/dotagents-input.log"
+GH_STATE_FILE="$TMP/gh-state"
 
 # --- stub dotagents-install.sh: writes NEW_LOCK_CONTENT into $1/agents.lock
 # when set, sleeps when SLEEP_SECS is set (to exercise the timeout), and
@@ -27,6 +29,7 @@ DOTAGENTS_LOG="$TMP/dotagents.log"
 cat > "$STUB_DIR/dotagents-install.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "$DOTAGENTS_LOG"
+cat "$1/agents.lock" >> "$DOTAGENTS_INPUT_LOG"
 [ -z "${SLEEP_SECS:-}" ] || sleep "$SLEEP_SECS"
 [ -z "${INSTALL_FAILS:-}" ] || { echo "dotagents: stub failure" >&2; exit 1; }
 if [ -n "${NEW_LOCK_CONTENT:-}" ]; then
@@ -53,12 +56,15 @@ echo "$*" >> "$GH_LOG"
 if [ "$1" = pr ] && [ "$2" = list ]; then
   if [ -n "${EXISTING_PR_URL:-}" ]; then
     printf '%s\n' "$EXISTING_PR_URL"
+  elif [ -s "$GH_STATE_FILE" ]; then
+    cat "$GH_STATE_FILE"
   fi
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = create ]; then
   [ -z "${PR_CREATE_FAILS:-}" ] || { echo "gh: stub pr create failure" >&2; exit 1; }
   echo "https://github.com/fake/repo/pull/999"
+  echo "https://github.com/fake/repo/pull/999" > "$GH_STATE_FILE"
   exit 0
 fi
 exit 0
@@ -82,10 +88,13 @@ cat >> "$STUB_DIR/git" <<'EOF'
 # refresh-skills.sh always calls git as `git -C <dir> <subcommand> ...`, so
 # $1 is "-C", not the subcommand — match "push" anywhere in the argv instead.
 case " $* " in
+  *' fetch '*)
+    [ -z "${GIT_FETCH_FAILS:-}" ] || { echo "git: stub fetch failure" >&2; exit 1; }
+    ;;
   *' push '*)
     echo "$@" >> "$GIT_PUSH_LOG"
     [ -z "${GIT_PUSH_FAILS:-}" ] || { echo "git: stub push failure" >&2; exit 1; }
-    exit 0
+    exec "$REAL_GIT" -C "$2" push --no-verify "${@:4}"
     ;;
 esac
 exec "$REAL_GIT" "$@"
@@ -127,7 +136,8 @@ run() {
   OUT="$(env "$@" \
     WORKSPACE="$WORKSPACE_DIR" TOOLDIR="$STUB_DIR" PROJECT_NAME=proj GH_OWNER=owner \
     GITHUB_APP_DIR="$GITHUB_APP_DIR" GH_LOG="$GH_LOG" TOKEN_LOG="$TOKEN_LOG" GIT_PUSH_LOG="$GIT_PUSH_LOG" \
-    DOTAGENTS_LOG="$DOTAGENTS_LOG" PATH="$STUB_PATH" \
+    DOTAGENTS_LOG="$DOTAGENTS_LOG" DOTAGENTS_INPUT_LOG="$DOTAGENTS_INPUT_LOG" GH_STATE_FILE="$GH_STATE_FILE" \
+    PATH="$STUB_PATH" \
     bash "$TEST_SCRIPT" 2>&1)"
   STATUS=$?
   set -e
@@ -138,6 +148,7 @@ reset_workspace() {
   git -C "$WORKSPACE_DIR" reset -q --hard origin/main
   git -C "$WORKSPACE_DIR" clean -qfd
   : > "$GH_LOG"; : > "$TOKEN_LOG"; : > "$GIT_PUSH_LOG"; : > "$DOTAGENTS_LOG"
+  : > "$DOTAGENTS_INPUT_LOG"; : > "$GH_STATE_FILE"
 }
 gh_call_count() { grep -c '^pr ' "$GH_LOG" 2>/dev/null || true; }
 
@@ -198,6 +209,8 @@ run
 [[ $STATUS -eq 0 ]] || fail "case 5: exited $STATUS, expected 0: $OUT"
 [[ -s $DOTAGENTS_LOG ]] || fail "case 5: dotagents-install.sh was never invoked"
 [[ "$(gh_call_count)" -eq 0 ]] || fail "case 5: gh was called despite no agents.lock diff"
+git --git-dir="$REMOTE_DIR" show-ref --verify --quiet refs/heads/agent/agents-lock-upgrade && \
+  fail "case 5: no-change resolution published a bump branch"
 [[ "$OUT" != *WARNING* ]] || fail "case 5: unexpected WARNING with no diff: $OUT"
 
 # =========================================================================
@@ -237,55 +250,60 @@ grep -Fq 'pr create' "$GH_LOG" && fail "case 7: gh pr create should not run when
   fail "case 7: primary agents.lock was not restored"
 
 # =========================================================================
-# Case 8 (#108): primary on a feature branch, resolution differs from what
-# that branch has tracked -> the bump PR still fires (comparison is against
-# origin/main, not the current branch), and the primary worktree is
-# restored to its own tracked content (never left dirty), whichever branch
-# it's on.
+# Case 8 (#108): staged and unstaged feature-branch agents.lock edits survive
+# byte-for-byte. Resolution runs from origin/main's lock, never from either
+# feature-branch layer, and still opens the bump PR.
 # =========================================================================
 reset_workspace
 git -C "$WORKSPACE_DIR" checkout -qB feature
+printf 'feature-staged\n' > "$WORKSPACE_DIR/agents.lock"
+git -C "$WORKSPACE_DIR" add agents.lock
+git -C "$WORKSPACE_DIR" show :agents.lock > "$TMP/feature-staged.expected"
+printf 'feature-unstaged\n' > "$WORKSPACE_DIR/agents.lock"
+cp "$WORKSPACE_DIR/agents.lock" "$TMP/feature-unstaged.expected"
 run NEW_LOCK_CONTENT=new-lock-v3
 [[ $STATUS -eq 0 ]] || fail "case 8: exited $STATUS, expected 0: $OUT"
 grep -Fq 'pr create' "$GH_LOG" || fail "case 8: expected gh pr create to run on a feature branch: $(cat "$GH_LOG")"
-[[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \
-  fail "case 8: primary agents.lock was not restored to its own tracked content"
-[[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
-  fail "case 8: primary worktree left dirty on a feature branch: $(git -C "$WORKSPACE_DIR" status --porcelain)"
+git -C "$WORKSPACE_DIR" show :agents.lock > "$TMP/feature-staged.actual"
+cmp -s "$TMP/feature-staged.expected" "$TMP/feature-staged.actual" || \
+  fail "case 8: staged agents.lock edit was changed"
+cmp -s "$TMP/feature-unstaged.expected" "$WORKSPACE_DIR/agents.lock" || \
+  fail "case 8: unstaged agents.lock edit was changed"
+[[ "$(git -C "$WORKSPACE_DIR" status --porcelain -- agents.lock)" == "MM agents.lock" ]] || \
+  fail "case 8: agents.lock index/worktree state changed: $(git -C "$WORKSPACE_DIR" status --porcelain -- agents.lock)"
+[[ "$(cat "$DOTAGENTS_INPUT_LOG")" == "old-lock" ]] || \
+  fail "case 8: resolution did not start from origin/main: $(cat "$DOTAGENTS_INPUT_LOG")"
+[[ "$(git --git-dir="$REMOTE_DIR" show refs/heads/agent/agents-lock-upgrade:agents.lock)" == "new-lock-v3" ]] || \
+  fail "case 8: feature-branch agents.lock edits leaked into the published lock"
 [[ "$OUT" == *"https://github.com/fake/repo/pull/999"* ]] || fail "case 8: expected the PR URL reported: $OUT"
+git -C "$WORKSPACE_DIR" reset -q --hard
 git -C "$WORKSPACE_DIR" checkout -q main
 
 # =========================================================================
-# Case 9 (#108): a feature branch's own committed agents.lock edit already
-# matches what installation resolves to -> no diff is detected against the
-# branch's own tracked file, so the bump is never computed and the edit is
-# left exactly as the branch committed it (never folded into the automated
-# PR against origin/main, which still differs).
+# Case 9: fetch failure is nonfatal and never starts resolution or publication.
 # =========================================================================
 reset_workspace
-git -C "$WORKSPACE_DIR" checkout -qB feature
-printf 'feature-lock\n' > "$WORKSPACE_DIR/agents.lock"
-git -C "$WORKSPACE_DIR" add agents.lock
-git -C "$WORKSPACE_DIR" -c user.email=test@example.com -c user.name=Test \
-  commit -qm "feature: pin agents.lock"
-: > "$GH_LOG"; : > "$TOKEN_LOG"; : > "$GIT_PUSH_LOG"; : > "$DOTAGENTS_LOG"
-run NEW_LOCK_CONTENT=feature-lock
+run NEW_LOCK_CONTENT=new-lock-fetch-failure GIT_FETCH_FAILS=1
 [[ $STATUS -eq 0 ]] || fail "case 9: exited $STATUS, expected 0: $OUT"
-[[ "$(gh_call_count)" -eq 0 ]] || fail "case 9: gh was called despite no diff against the branch's own tracked lock: $(cat "$GH_LOG")"
-[[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "feature-lock" ]] || \
-  fail "case 9: feature branch's own agents.lock edit was disturbed"
-[[ "$OUT" != *WARNING* ]] || fail "case 9: unexpected WARNING with no local diff: $OUT"
-git -C "$WORKSPACE_DIR" checkout -q main
+[[ "$OUT" == *"fetching origin/main failed"* ]] || fail "case 9: expected fetch warning, got: $OUT"
+[[ ! -s "$DOTAGENTS_LOG" ]] || fail "case 9: resolution ran after fetch failed: $(cat "$DOTAGENTS_LOG")"
+[[ ! -s "$GIT_PUSH_LOG" ]] || fail "case 9: push ran after fetch failed: $(cat "$GIT_PUSH_LOG")"
+[[ "$(gh_call_count)" -eq 0 ]] || fail "case 9: gh ran after fetch failed: $(cat "$GH_LOG")"
+[[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
+  fail "case 9: primary worktree changed after fetch failure: $(git -C "$WORKSPACE_DIR" status --porcelain)"
 
 # =========================================================================
 # Case 10: git push fails -> "auto-PR failed" WARNING, agents.lock still
 # restored, gh pr create never reached.
 # =========================================================================
 reset_workspace
+PUSH_FAILURE_BASELINE="$(git --git-dir="$REMOTE_DIR" rev-parse refs/heads/agent/agents-lock-upgrade)"
 run NEW_LOCK_CONTENT=new-lock-v4 GIT_PUSH_FAILS=1
 [[ $STATUS -eq 0 ]] || fail "case 10: exited $STATUS, expected 0: $OUT"
 [[ "$OUT" == *"auto-PR failed"* ]] || fail "case 10: expected an auto-PR-failed warning, got: $OUT"
 grep -Fq 'pr create' "$GH_LOG" && fail "case 10: gh pr create should not run after a failed push: $(cat "$GH_LOG")"
+[[ "$(git --git-dir="$REMOTE_DIR" rev-parse refs/heads/agent/agents-lock-upgrade)" == "$PUSH_FAILURE_BASELINE" ]] || \
+  fail "case 10: failed push changed the published bump branch"
 [[ "$(cat "$WORKSPACE_DIR/agents.lock")" == "old-lock" ]] || \
   fail "case 10: primary agents.lock was not restored after a failed push"
 
@@ -299,20 +317,31 @@ reset_workspace
 STATUS_A_FILE="$TMP/status-a"
 STATUS_B_FILE="$TMP/status-b"
 run_bg() {
-  local status_file="$1"; shift
+  local status_file="$1" output_file="$2"; shift 2
   env "$@" WORKSPACE="$WORKSPACE_DIR" TOOLDIR="$STUB_DIR" PROJECT_NAME=proj GH_OWNER=owner \
     GITHUB_APP_DIR="$GITHUB_APP_DIR" GH_LOG="$GH_LOG" TOKEN_LOG="$TOKEN_LOG" GIT_PUSH_LOG="$GIT_PUSH_LOG" \
-    DOTAGENTS_LOG="$DOTAGENTS_LOG" PATH="$STUB_PATH" \
-    bash "$TEST_SCRIPT" >/dev/null 2>&1
+    DOTAGENTS_LOG="$DOTAGENTS_LOG" DOTAGENTS_INPUT_LOG="$DOTAGENTS_INPUT_LOG" GH_STATE_FILE="$GH_STATE_FILE" \
+    PATH="$STUB_PATH" bash "$TEST_SCRIPT" >"$output_file" 2>&1
   echo $? > "$status_file"
 }
-run_bg "$STATUS_A_FILE" NEW_LOCK_CONTENT=new-lock-race-a &
-run_bg "$STATUS_B_FILE" NEW_LOCK_CONTENT=new-lock-race-b &
+OUT_A_FILE="$TMP/out-a"
+OUT_B_FILE="$TMP/out-b"
+run_bg "$STATUS_A_FILE" "$OUT_A_FILE" NEW_LOCK_CONTENT=new-lock-race-a SLEEP_SECS=2 &
+for _ in $(seq 1 100); do
+  [[ -s "$DOTAGENTS_LOG" ]] && break
+  sleep 0.02
+done
+[[ -s "$DOTAGENTS_LOG" ]] || fail "case 11: run A never entered resolution"
+run_bg "$STATUS_B_FILE" "$OUT_B_FILE" NEW_LOCK_CONTENT=new-lock-race-b &
 wait
 [[ "$(cat "$STATUS_A_FILE")" -eq 0 ]] || fail "case 11: concurrent run A exited nonzero"
 [[ "$(cat "$STATUS_B_FILE")" -eq 0 ]] || fail "case 11: concurrent run B exited nonzero"
-[[ "$(git -C "$WORKSPACE_DIR" worktree list | grep -c 'agent/agents-lock-upgrade' 2>/dev/null || true)" -le 1 ]] || \
-  fail "case 11: more than one worktree entry survived a concurrent bump"
+[[ "$(git --git-dir="$REMOTE_DIR" show refs/heads/agent/agents-lock-upgrade:agents.lock)" == "new-lock-race-b" ]] || \
+  fail "case 11: published lock did not come from serialized final run"
+[[ "$(grep -c '^pr create' "$GH_LOG" 2>/dev/null || true)" -eq 1 ]] || \
+  fail "case 11: concurrent runs created more than one PR: $(cat "$GH_LOG")"
+[[ "$(git -C "$WORKSPACE_DIR" worktree list --porcelain | grep -c '^worktree ' 2>/dev/null || true)" -eq 1 ]] || \
+  fail "case 11: disposable worktree survived concurrent refreshes"
 [[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
   fail "case 11: primary worktree left dirty after a concurrent bump: $(git -C "$WORKSPACE_DIR" status --porcelain)"
 

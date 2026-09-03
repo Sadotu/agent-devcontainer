@@ -43,62 +43,62 @@ fi
 # run (#92 Scope) — a per-run branch would pile up unmergeable PRs once the
 # trigger is every container start rather than create-only/rare (#79).
 BUMP_BRANCH="agent/agents-lock-upgrade"
-# Serializes the worktree/branch/push sequence below across concurrent
-# refresh-skills.sh runs (postCreate + postStart can overlap) — two `git
-# worktree add -B` calls for the same branch race/corrupt otherwise (#108).
-BUMP_FLOCK="${TMPDIR:-/tmp}/agents-lock-bump.flock"
+git_common_dir="$(git -C "$WORKSPACE" rev-parse --git-common-dir 2>/dev/null)"
+case "$git_common_dir" in
+  /*) ;;
+  *) git_common_dir="$WORKSPACE/$git_common_dir" ;;
+esac
+# Keep the lock in this repository's common Git directory so every linked
+# worktree shares it, while unrelated repositories never block each other.
+# It covers fetch, resolution, worktree lifecycle, and publication: postCreate
+# and postStart may overlap, and all of those steps share refs or remote state.
+BUMP_FLOCK="$git_common_dir/agents-lock-bump.flock"
 
-maybe_bump_agents_lock() {
-  # dotagents-install.sh just resolved skill pins into agents.lock in the
-  # primary worktree, on whatever branch happens to be checked out there.
-  # That resolution is a transient side effect of installing runtime
-  # skills, not the source of truth for the automated bump PR — always
-  # restore the primary worktree's tracked agents.lock afterward, on any
-  # branch, and decide independently whether origin/main needs a bump PR
-  # (#108: previously this only ran when primary was on main, so a feature
-  # branch was left dirty).
-  local resolved_lock=""
-  if ! git -C "$WORKSPACE" diff --quiet -- agents.lock; then
-    resolved_lock="$(mktemp)"
-    cp "$WORKSPACE/agents.lock" "$resolved_lock"
-  fi
-  git -C "$WORKSPACE" checkout -- agents.lock || \
-    echo "WARNING: could not restore agents.lock in the primary worktree — run 'git checkout -- agents.lock' manually."
-  [ -n "$resolved_lock" ] || return 0
-
-  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
-    echo "WARNING: agents.lock changed but fetching origin/main failed — see /tmp/agents-lock-bump.log."
-    rm -f "$resolved_lock"
-    return 0
-  fi
-  if git -C "$WORKSPACE" show origin/main:agents.lock 2>/dev/null | cmp -s - "$resolved_lock"; then
-    rm -f "$resolved_lock"
-    return 0
-  fi
-
-  (
-    flock -w 300 200 || { echo "WARNING: agents.lock changed but a concurrent refresh held the bump lock too long — see /tmp/agents-lock-bump.log."; exit 0; }
-    bump_agents_lock_pr "$resolved_lock"
-  ) 200>"$BUMP_FLOCK"
-  rm -f "$resolved_lock"
+install_dotagents() {
+  local WORKSPACE="$1"
+  timeout "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
 }
 
-bump_agents_lock_pr() {
-  local resolved_lock="$1" bump_wt bump_pr_url="" existing_pr=""
+resolve_and_bump_agents_lock() {
+  local bump_wt bump_pr_url="" existing_pr="" status
+  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
   bump_wt="$(mktemp -d)"
   rmdir "$bump_wt"
-
-  # Unlike the old timestamped-per-run branch (always fresh), a fixed branch
-  # can collide with a leftover worktree entry from an interrupted prior run.
   git -C "$WORKSPACE" worktree prune 2>/dev/null || true
-  if git -C "$WORKSPACE" worktree add -q -B "$BUMP_BRANCH" "$bump_wt" origin/main \
-      >/tmp/agents-lock-bump.log 2>&1 && \
-     cp "$resolved_lock" "$bump_wt/agents.lock" && \
-     git -C "$bump_wt" add agents.lock && \
+  if ! git -C "$WORKSPACE" worktree add -q --detach "$bump_wt" origin/main \
+      >>/tmp/agents-lock-bump.log 2>&1; then
+    echo "WARNING: agents.lock refresh failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
+  if install_dotagents "$bump_wt" 2>&1 | sed 's/^/    /'; then
+    if git -C "$bump_wt" diff --quiet -- agents.lock; then
+      git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
+      return 0
+    fi
+  else
+    status=$?
+    git -C "$WORKSPACE" worktree remove "$bump_wt" --force 2>/dev/null || rm -rf "$bump_wt"
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
+    else
+      echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
+    fi
+    return 0
+  fi
+
+  # Commit the detached resolution and publish it directly to the one fixed
+  # remote branch. No local bump branch exists, so interrupted old worktrees
+  # cannot pin that branch or influence the generated lock.
+  if git -C "$bump_wt" add agents.lock && \
      git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
        commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
-     git -C "$bump_wt" push -qf -u origin "$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
+     git -C "$bump_wt" push -qf origin "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
     existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list \
       --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
       --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)" || existing_pr=""
@@ -120,18 +120,19 @@ bump_agents_lock_pr() {
   fi
 }
 
+refresh_agents_lock() {
+  (
+    flock -w 300 200 || {
+      echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
+      exit 0
+    }
+    resolve_and_bump_agents_lock
+  ) 200>"$BUMP_FLOCK"
+}
+
 echo "==> Self-authored skills (dotagents)"
 # Bounded so a hung download can never wedge container start (postStart) or
 # postCreate. REFRESH_SKILLS_TIMEOUT overrides the 120s default for tests.
 timeout_secs="${REFRESH_SKILLS_TIMEOUT:-120}"
-if timeout "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR" 2>&1 | sed 's/^/    /'; then
-  maybe_bump_agents_lock
-else
-  status=$?
-  if [ "$status" -eq 124 ]; then
-    echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
-  else
-    echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
-  fi
-fi
+refresh_agents_lock
 exit 0
