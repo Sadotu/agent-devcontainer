@@ -30,6 +30,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Playwright's Chromium runtime dependencies (issue #101). Installed via
+# Playwright's maintained command rather than a hand-maintained apt list, so it
+# tracks whatever Chromium build the pinned `@playwright/test` version ships.
+# Root-only, build-time — `npx playwright install-deps` shells out to
+# `sudo apt-get`, which `NoNewPrivs=1` blocks for the runtime `vscode` user.
+RUN npx --yes playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 # GitHub CLI (official apt repository)
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
