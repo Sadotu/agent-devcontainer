@@ -95,6 +95,10 @@ cp -n "$2/agents.toml" "$1/agents.toml"
   [ -z "${RESOLUTION_STARTED_FILE:-}" ] || : > "$RESOLUTION_STARTED_FILE"
   [ -z "${RESOLUTION_SLEEP_SECS:-}" ] || sleep "$RESOLUTION_SLEEP_SECS"
 }
+if [ -n "${DESCENDANT_SLEEP_SECS:-}" ]; then
+  ( sleep "$DESCENDANT_SLEEP_SECS"; : > "$DESCENDANT_DONE_FILE" ) &
+  wait
+fi
 [ -z "${SLEEP_SECS:-}" ] || sleep "$SLEEP_SECS"
 [ -z "${INSTALL_FAILS:-}" ] || { echo "dotagents: stub failure" >&2; exit 1; }
 if [ -n "${NEW_LOCK_FILE:-}" ]; then
@@ -267,9 +271,14 @@ set -e
 # production 120s bound so the test stays fast.
 # =========================================================================
 reset_workspace
-run SLEEP_SECS=2 REFRESH_SKILLS_TIMEOUT=1
+TIMEOUT_STARTED_MS="$(date +%s%3N)"
+run DESCENDANT_SLEEP_SECS=4 DESCENDANT_DONE_FILE="$TMP/descendant-finished" REFRESH_SKILLS_TIMEOUT=1
+TIMEOUT_ELAPSED_MS=$(( $(date +%s%3N) - TIMEOUT_STARTED_MS ))
 [[ $STATUS -eq 0 ]] || fail "case 3: exited $STATUS, expected 0: $OUT"
 [[ "$OUT" == *"timed out"* ]] || fail "case 3: expected a timeout warning, got: $OUT"
+[[ "$TIMEOUT_ELAPSED_MS" -lt 3500 ]] || \
+  fail "case 3: helper descendants extended two 1s timeouts to ${TIMEOUT_ELAPSED_MS}ms"
+[[ ! -e "$TMP/descendant-finished" ]] || fail "case 3: timed-out helper descendant survived"
 
 # =========================================================================
 # Case 4: dotagents-install.sh fails outright -> WARNING, exit 0, no bump.
@@ -480,6 +489,13 @@ wait_for_resolution_cleanup() {
   return 1
 }
 
+kill_interruptible_hard() {
+  ACTIVE_INSTALL_FILE="$WORKSPACE_DIR/.git/agents-lock-active-install"
+  [[ -s "$ACTIVE_INSTALL_FILE" ]] || fail "case 12: active installer process group was not recorded"
+  STALE_INSTALL_PID="$(cat "$ACTIVE_INSTALL_FILE")"
+  kill -KILL -- "-$INTERRUPT_PID"
+}
+
 reset_workspace
 RESOLUTION_WT="$WORKSPACE_DIR/.git/agents-lock-refresh-worktree"
 TERM_MARKER="$TMP/term-resolution-started"
@@ -497,7 +513,8 @@ wait_for_resolution_cleanup || fail "case 12: TERM cleanup did not finish"
 KILL_MARKER="$TMP/kill-resolution-started"
 start_interruptible "$TMP/kill.out" RESOLUTION_STARTED_FILE="$KILL_MARKER" RESOLUTION_SLEEP_SECS=30
 wait_for_marker "$KILL_MARKER"
-kill -KILL -- "-$INTERRUPT_PID"
+kill_interruptible_hard
+KILLED_RESOLUTION_INSTALL_PID="$STALE_INSTALL_PID"
 set +e
 wait "$INTERRUPT_PID" 2>/dev/null
 set -e
@@ -507,6 +524,8 @@ run
 [[ ! -e "$RESOLUTION_WT" ]] || fail "case 12: restart left recovered resolution directory behind"
 [[ "$(git -C "$WORKSPACE_DIR" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ]] || \
   fail "case 12: restart left stale worktree metadata behind"
+kill -0 "$KILLED_RESOLUTION_INSTALL_PID" 2>/dev/null && \
+  fail "case 12: restart left interrupted resolution descendant running"
 
 # A crash during primary materialization leaves the preserved lock snapshot;
 # startup recovery must restore it before retrying either installation phase.
@@ -515,7 +534,8 @@ RUNTIME_MARKER="$TMP/runtime-started"
 start_interruptible "$TMP/runtime-kill.out" RUNTIME_STARTED_FILE="$RUNTIME_MARKER" \
   RUNTIME_SLEEP_SECS=30 RUNTIME_EARLY_LOCK_FILE="$LOCK_V4"
 wait_for_marker "$RUNTIME_MARKER"
-kill -KILL -- "-$INTERRUPT_PID"
+kill_interruptible_hard
+KILLED_RUNTIME_INSTALL_PID="$STALE_INSTALL_PID"
 set +e
 wait "$INTERRUPT_PID" 2>/dev/null
 set -e
@@ -529,6 +549,8 @@ cmp -s "$LOCK_BASE" "$WORKSPACE_DIR/agents.lock" || \
   fail "case 12: restart did not restore primary lock after runtime crash"
 [[ ! -e "$WORKSPACE_DIR/.git/agents-lock-primary-state" ]] || \
   fail "case 12: restart left primary lock recovery state behind"
+kill -0 "$KILLED_RUNTIME_INSTALL_PID" 2>/dev/null && \
+  fail "case 12: restart left interrupted runtime descendant running"
 [[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
   fail "case 12: restart after runtime crash changed tracked primary state"
 

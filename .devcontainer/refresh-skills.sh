@@ -55,10 +55,65 @@ esac
 BUMP_FLOCK="$git_common_dir/agents-lock-bump.flock"
 BUMP_WT="$git_common_dir/agents-lock-refresh-worktree"
 PRIMARY_LOCK_STATE="$git_common_dir/agents-lock-primary-state"
+INSTALL_OUTPUT="$git_common_dir/agents-lock-install-output"
+ACTIVE_INSTALL_FILE="$git_common_dir/agents-lock-active-install"
+ACTIVE_INSTALL_PID=""
+
+stop_active_install() {
+  local pid="${ACTIVE_INSTALL_PID:-}" attempt recorded=0
+  if [ -z "$pid" ] && [ -s "$ACTIVE_INSTALL_FILE" ]; then
+    pid="$(cat "$ACTIVE_INSTALL_FILE" 2>/dev/null)"
+    recorded=1
+  fi
+  if [ "$recorded" -eq 1 ]; then
+    case "$pid" in
+      ''|*[!0-9]*) pid="" ;;
+      *)
+        if [ ! -r "/proc/$pid/cmdline" ] ||
+           ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$TOOLDIR/dotagents-install.sh"; then
+          pid=""
+        fi
+        ;;
+    esac
+  fi
+  if [ -z "$pid" ]; then
+    rm -f "$ACTIVE_INSTALL_FILE"
+    return 0
+  fi
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  for attempt in $(seq 1 50); do
+    kill -0 -- "-$pid" 2>/dev/null || break
+    sleep 0.02
+  done
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+  for attempt in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.02
+  done
+  rm -f "$ACTIVE_INSTALL_FILE"
+  ACTIVE_INSTALL_PID=""
+}
 
 install_dotagents() {
-  local WORKSPACE="$1"
-  timeout --foreground "$timeout_secs" "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
+  local WORKSPACE="$1" status=0
+  : > "$INSTALL_OUTPUT" || return 1
+  setsid timeout --kill-after=5 "$timeout_secs" \
+    "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR" \
+    >"$INSTALL_OUTPUT" 2>&1 200>&- &
+  ACTIVE_INSTALL_PID=$!
+  if ! printf '%s\n' "$ACTIVE_INSTALL_PID" > "$ACTIVE_INSTALL_FILE"; then
+    stop_active_install
+    return 1
+  fi
+  wait "$ACTIVE_INSTALL_PID" || status=$?
+  rm -f "$ACTIVE_INSTALL_FILE"
+  ACTIVE_INSTALL_PID=""
+  sed 's/^/    /' "$INSTALL_OUTPUT"
+  rm -f "$INSTALL_OUTPUT"
+  return "$status"
 }
 
 restore_primary_lock() {
@@ -93,6 +148,8 @@ cleanup_resolution_worktree() {
 }
 
 cleanup_refresh_state() {
+  stop_active_install
+  rm -f "$INSTALL_OUTPUT"
   restore_primary_lock || \
     echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
   cleanup_resolution_worktree
@@ -105,7 +162,7 @@ materialize_runtime_skills() {
     return 0
   fi
 
-  install_dotagents "$WORKSPACE" 2>&1 | sed 's/^/    /' || status=$?
+  install_dotagents "$WORKSPACE" || status=$?
   restore_primary_lock || \
     echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
 
@@ -134,7 +191,7 @@ resolve_and_bump_agents_lock() {
     return 0
   fi
 
-  if install_dotagents "$bump_wt" 2>&1 | sed 's/^/    /'; then
+  if install_dotagents "$bump_wt"; then
     if git -C "$bump_wt" diff --quiet -- agents.lock; then
       return 0
     fi
@@ -182,8 +239,9 @@ refresh_agents_lock() {
       echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
       exit 0
     }
-    trap 'exit 0' INT TERM
+    trap 'stop_active_install; exit 0' INT TERM
     trap cleanup_refresh_state EXIT
+    stop_active_install
     if ! restore_primary_lock; then
       echo "WARNING: could not recover agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
       exit 0
