@@ -58,26 +58,38 @@ PRIMARY_LOCK_STATE="$git_common_dir/agents-lock-primary-state"
 INSTALL_OUTPUT="$git_common_dir/agents-lock-install-output"
 ACTIVE_INSTALL_FILE="$git_common_dir/agents-lock-active-install"
 ACTIVE_INSTALL_PID=""
+ACTIVE_INSTALL_START=""
+ACTIVE_INSTALL_SUPERVISOR_PID=""
+
+proc_start_identity() {
+  local stat rest
+  IFS= read -r stat < "/proc/$1/stat" || return 1
+  rest="${stat##*) }"
+  set -- $rest
+  [ "$#" -ge 20 ] || return 1
+  printf '%s\n' "${20}"
+}
 
 stop_active_install() {
-  local pid="${ACTIVE_INSTALL_PID:-}" attempt recorded=0
+  local pid="${ACTIVE_INSTALL_PID:-}" start="${ACTIVE_INSTALL_START:-}" current_start attempt
   if [ -z "$pid" ] && [ -s "$ACTIVE_INSTALL_FILE" ]; then
-    pid="$(cat "$ACTIVE_INSTALL_FILE" 2>/dev/null)"
-    recorded=1
+    read -r pid start < "$ACTIVE_INSTALL_FILE" || pid=""
   fi
-  if [ "$recorded" -eq 1 ]; then
-    case "$pid" in
-      ''|*[!0-9]*) pid="" ;;
-      *)
-        if [ ! -r "/proc/$pid/cmdline" ] ||
-           ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$TOOLDIR/dotagents-install.sh"; then
-          pid=""
-        fi
-        ;;
-    esac
-  fi
+  case "$pid:$start" in
+    *[!0-9:]*|:*|*:) pid="" ;;
+    *)
+      current_start="$(proc_start_identity "$pid" 2>/dev/null)" || current_start=""
+      if [ "$current_start" != "$start" ] || [ ! -r "/proc/$pid/cmdline" ] ||
+         ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$TOOLDIR/dotagents-install.sh"; then
+        pid=""
+      fi
+      ;;
+  esac
   if [ -z "$pid" ]; then
-    rm -f "$ACTIVE_INSTALL_FILE"
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_PID=""
+    ACTIVE_INSTALL_START=""
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
     return 0
   fi
   kill -TERM -- "-$pid" 2>/dev/null || true
@@ -88,29 +100,104 @@ stop_active_install() {
   if kill -0 -- "-$pid" 2>/dev/null; then
     kill -KILL -- "-$pid" 2>/dev/null || true
   fi
-  wait "$pid" 2>/dev/null || true
+  if [ -n "${ACTIVE_INSTALL_SUPERVISOR_PID:-}" ]; then
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+  else
+    wait "$pid" 2>/dev/null || true
+  fi
   for attempt in $(seq 1 50); do
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.02
   done
-  rm -f "$ACTIVE_INSTALL_FILE"
+  rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
   ACTIVE_INSTALL_PID=""
+  ACTIVE_INSTALL_START=""
+  ACTIVE_INSTALL_SUPERVISOR_PID=""
 }
 
 install_dotagents() {
-  local WORKSPACE="$1" status=0
+  local WORKSPACE="$1" status=0 ready pid start recorded_pid recorded_start
+  local ready_fd ack_fd
   : > "$INSTALL_OUTPUT" || return 1
-  setsid timeout --kill-after=5 "$timeout_secs" \
-    "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR" \
-    >"$INSTALL_OUTPUT" 2>&1 200>&- &
-  ACTIVE_INSTALL_PID=$!
-  if ! printf '%s\n' "$ACTIVE_INSTALL_PID" > "$ACTIVE_INSTALL_FILE"; then
+
+  # Keep fd 200 in the new process group until its PID and kernel start time
+  # are durably registered and the parent acknowledges that registration.
+  # If the parent crashes first, pipe EOF makes the child exit while it still
+  # owns the flock, so a restart cannot overlap an unregistered installer.
+  coproc INSTALL_SUPERVISOR {
+    read -r launch || exit 0
+    [ "$launch" = launch ] || exit 1
+    exec setsid --wait bash -c '
+      active_file="$1"
+      output_file="$2"
+      timeout_secs="$3"
+      helper="$4"
+      workspace="$5"
+      tooldir="$6"
+      pid="$BASHPID"
+      IFS= read -r stat < "/proc/$pid/stat" || exit 1
+      rest="${stat##*) }"
+      set -- $rest
+      [ "$#" -ge 20 ] || exit 1
+      start="${20}"
+      printf "%s %s\n" "$pid" "$start" > "$active_file.handoff" || exit 1
+      mv -f "$active_file.handoff" "$active_file" || exit 1
+      printf "ready %s %s\n" "$pid" "$start" || exit 0
+      read -r command ack_pid ack_start || exit 0
+      [ "$command" = close ] && [ "$ack_pid" = "$pid" ] && [ "$ack_start" = "$start" ] || exit 1
+      exec >"$output_file" 2>&1
+      exec 200>&-
+      exec timeout --kill-after=5 "$timeout_secs" "$helper" "$workspace" "$tooldir"
+    ' _ "$ACTIVE_INSTALL_FILE" "$INSTALL_OUTPUT" "$timeout_secs" \
+      "$TOOLDIR/dotagents-install.sh" "$WORKSPACE" "$TOOLDIR"
+  } 200>&200
+  ACTIVE_INSTALL_SUPERVISOR_PID=$INSTALL_SUPERVISOR_PID
+  ready_fd=${INSTALL_SUPERVISOR[0]}
+  ack_fd=${INSTALL_SUPERVISOR[1]}
+
+  if ! printf 'launch\n' >&"$ack_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  if ! read -r ready pid start <&"$ready_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  if [ -n "${INSTALL_HANDOFF_DELAY_SECS:-}" ]; then
+    sleep "$INSTALL_HANDOFF_DELAY_SECS"
+  fi
+  read -r recorded_pid recorded_start < "$ACTIVE_INSTALL_FILE" || recorded_pid=""
+  if [ "$ready" != ready ] || [ "$pid" != "$recorded_pid" ] || [ "$start" != "$recorded_start" ] ||
+     [ "$(proc_start_identity "$pid" 2>/dev/null)" != "$start" ]; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
+    wait "$ACTIVE_INSTALL_SUPERVISOR_PID" 2>/dev/null || true
+    rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
+    ACTIVE_INSTALL_SUPERVISOR_PID=""
+    return 1
+  fi
+  ACTIVE_INSTALL_PID=$pid
+  ACTIVE_INSTALL_START=$start
+  if ! printf 'close %s %s\n' "$pid" "$start" >&"$ack_fd"; then
+    exec {ready_fd}<&-
+    exec {ack_fd}>&-
     stop_active_install
     return 1
   fi
-  wait "$ACTIVE_INSTALL_PID" || status=$?
-  rm -f "$ACTIVE_INSTALL_FILE"
+  exec {ready_fd}<&-
+  exec {ack_fd}>&-
+  wait "$ACTIVE_INSTALL_SUPERVISOR_PID" || status=$?
+  rm -f "$ACTIVE_INSTALL_FILE" "$ACTIVE_INSTALL_FILE.handoff"
   ACTIVE_INSTALL_PID=""
+  ACTIVE_INSTALL_START=""
+  ACTIVE_INSTALL_SUPERVISOR_PID=""
   sed 's/^/    /' "$INSTALL_OUTPUT"
   rm -f "$INSTALL_OUTPUT"
   return "$status"

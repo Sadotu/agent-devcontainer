@@ -554,4 +554,45 @@ kill -0 "$KILLED_RUNTIME_INSTALL_PID" 2>/dev/null && \
 [[ -z "$(git -C "$WORKSPACE_DIR" status --porcelain)" ]] || \
   fail "case 12: restart after runtime crash changed tracked primary state"
 
+# =========================================================================
+# Case 13: kill the parent before its active-installer handoff completes.
+# The stopped child must still own fd 200, preventing a restart from entering
+# the shared state machine until the registered child exits.
+# =========================================================================
+reset_workspace
+HANDOFF_FILE="$WORKSPACE_DIR/.git/agents-lock-active-install"
+[[ ! -e "$HANDOFF_FILE" ]] || fail "case 13: stale active-installer state before replay"
+start_interruptible "$TMP/handoff-kill.out" INSTALL_HANDOFF_DELAY_SECS=30 RUNTIME_SLEEP_SECS=30
+for _ in $(seq 1 200); do
+  [[ -s "$HANDOFF_FILE" ]] && break
+  sleep 0.02
+done
+[[ -s "$HANDOFF_FILE" ]] || fail "case 13: installer handoff was never registered"
+read -r HANDOFF_PID HANDOFF_START < "$HANDOFF_FILE"
+[[ "$HANDOFF_PID" =~ ^[0-9]+$ && "$HANDOFF_START" =~ ^[0-9]+$ ]] || \
+  fail "case 13: handoff did not atomically record PID and start identity"
+HANDOFF_STAT="$(<"/proc/$HANDOFF_PID/stat")"
+HANDOFF_STAT="${HANDOFF_STAT##*) }"
+read -ra HANDOFF_FIELDS <<< "$HANDOFF_STAT"
+[[ "${HANDOFF_FIELDS[19]}" = "$HANDOFF_START" ]] || \
+  fail "case 13: recorded start identity does not match installer"
+kill -STOP -- "-$HANDOFF_PID"
+kill -KILL -- "-$INTERRUPT_PID"
+set +e
+wait "$INTERRUPT_PID" 2>/dev/null
+set -e
+if flock -n "$WORKSPACE_DIR/.git/agents-lock-bump.flock" -c true; then
+  kill -KILL -- "-$HANDOFF_PID" 2>/dev/null || true
+  fail "case 13: child released refresh lock before registration handoff"
+fi
+kill -CONT -- "-$HANDOFF_PID"
+for _ in $(seq 1 200); do
+  kill -0 "$HANDOFF_PID" 2>/dev/null || break
+  sleep 0.02
+done
+kill -0 "$HANDOFF_PID" 2>/dev/null && fail "case 13: pre-handoff child survived parent crash"
+run
+[[ $STATUS -eq 0 ]] || fail "case 13: restart after pre-handoff crash exited $STATUS: $OUT"
+[[ ! -e "$HANDOFF_FILE" ]] || fail "case 13: restart left handoff state behind"
+
 echo "PASS: refresh-skills.test.sh"
