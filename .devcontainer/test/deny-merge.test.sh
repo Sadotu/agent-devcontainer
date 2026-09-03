@@ -4,9 +4,17 @@
 # a payload with no `.tool_input.command`; allows everything else.
 set -euo pipefail
 
-HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/deny-merge.sh"
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOOK="$HOOK_DIR/deny-merge.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+
+# Host `test -x` can misreport on some bind-mounted workspaces (e.g. a
+# macOS-backed `fakeowner` mount): it reports true even though `execve`
+# rejects the shebang with "Permission denied" (exit 126). Git's tracked
+# mode is authoritative regardless of host/mount behavior — check it first.
+tracked_mode="$(git -C "$HOOK_DIR" ls-files -s deny-merge.sh | awk '{print $1}')"
+[ "$tracked_mode" = "100755" ] || fail "deny-merge.sh tracked as mode $tracked_mode in git, expected 100755 (executable)"
 
 [[ -x $HOOK ]] || fail "deny-merge.sh missing or not executable"
 
