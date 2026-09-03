@@ -23,6 +23,14 @@
 #                                  overwrite container and host/global auth.json
 #                                  from vault (--force required — clobbers a
 #                                  possibly live, already-refreshed token)
+#   ./.devcontainer/dc claude-push
+#                                  upload the container's ~/.claude/oauth-env
+#                                  token to Bitwarden (container-only — does
+#                                  NOT touch the host's ~/.claude login)
+#   ./.devcontainer/dc claude-pull
+#                                  overwrite the container's ~/.claude/oauth-env
+#                                  from Bitwarden (container-only; no --force —
+#                                  the Claude token doesn't rotate in-container)
 #   ./.devcontainer/dc self-update
 #                                  overwrite this per-project dc with the
 #                                  canonical copy baked into the image (backup
@@ -166,6 +174,27 @@ sync_codex_auth() {
   CODEX_SYNC_BACKUP=""
   trap - EXIT
   echo "Updated host Codex auth at $host_auth."
+}
+
+# No host-file handoff here, unlike sync_codex_auth: the container's
+# ~/.claude/oauth-env is the only target, and the host's ~/.claude is a
+# separate interactive login that must not be touched (issue #96). So this
+# just runs the container-side script and lets its output pass straight
+# through.
+sync_claude_auth() {
+  local mode="$1"; shift
+  local status=0
+  devcontainer exec --workspace-folder "$ROOT" \
+    /opt/agent-devcontainer/claude-auth-sync.sh "$mode" "$@" || status=$?
+  if [ "$mode" = pull ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    echo "" >&2
+    echo "WARNING: this host shell has CLAUDE_CODE_OAUTH_TOKEN set. devcontainer.json" >&2
+    echo "         forwards it into the container, where it shadows the freshly" >&2
+    echo "         pulled ~/.claude/oauth-env (.bashrc only sources oauth-env when" >&2
+    echo "         the env var is unset). Unset it on the host, then run 'dc up'" >&2
+    echo "         again for the pulled token to actually take effect." >&2
+  fi
+  return "$status"
 }
 
 # Canonical `dc` lives here inside the image (see Dockerfile / init.sh). It is
@@ -517,6 +546,9 @@ case "$cmd" in
     # Vault/container work runs inside container, where `bw` and ~/.codex live.
     # Validated handoff then atomically updates host/global auth.json.
     sync_codex_auth "${cmd#codex-}" "$@"
+    ;;
+  claude-push|claude-pull)
+    sync_claude_auth "${cmd#claude-}" "$@"
     ;;
   exec)
     devcontainer exec --workspace-folder "$ROOT" "$@"

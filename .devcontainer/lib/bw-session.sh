@@ -237,3 +237,82 @@ install_codex_auth_atomically() {
   rm -f -- "$staging"
   [ "$installed" = true ]
 }
+
+# True when the given string looks like a real Claude OAuth token: non-empty,
+# no internal whitespace (it's meant to be a single opaque value), and carries
+# the expected 'sk-ant-oat' prefix. There is no JSON structure to inspect here
+# (unlike Codex's .tokens.refresh_token) — this is the shape check applied in
+# both directions: claude-push and claude-pull.
+claude_oauth_token_is_valid() {
+  local token="$1"
+  case "$token" in
+    '') return 1 ;;
+    *[[:space:]]*) return 1 ;;
+    sk-ant-oat*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Atomically install a validated Claude OAuth token as ~/.claude/oauth-env's
+# `export CLAUDE_CODE_OAUTH_TOKEN=...` line, without risking a working
+# session. Same staging/backup/verify-after-move/restore-on-failure shape as
+# install_codex_auth_atomically.
+install_claude_oauth_env_atomically() {
+  local token="$1" destination="$2"
+  local env_dir staging backup had_destination=false destination_replaced=false installed=false
+
+  claude_oauth_token_is_valid "$token" || return 1
+  env_dir="$(dirname "$destination")"
+  mkdir -p "$env_dir" || return 1
+  staging="$(mktemp "$env_dir/.oauth-env.tmp.XXXXXX")" || return 1
+  backup="$(mktemp "$env_dir/.oauth-env.bak.XXXXXX")" || {
+    rm -f -- "$staging"
+    return 1
+  }
+  chmod 600 "$backup" || {
+    rm -f -- "$staging" "$backup"
+    return 1
+  }
+
+  if chmod 600 "$staging" \
+      && ( umask 077; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$token" >"$staging" ); then
+    if [ -e "$destination" ]; then
+      had_destination=true
+      cp -- "$destination" "$backup" || {
+        rm -f -- "$staging" "$backup"
+        return 1
+      }
+      chmod 600 "$backup" || {
+        rm -f -- "$staging" "$backup"
+        return 1
+      }
+    fi
+    if mv -- "$staging" "$destination"; then
+      destination_replaced=true
+      if grep -q '^export CLAUDE_CODE_OAUTH_TOKEN=' "$destination" 2>/dev/null \
+          && [ "$(stat -c '%a' "$destination" 2>/dev/null || true)" = 600 ]; then
+        installed=true
+      fi
+    fi
+  fi
+
+  if [ "$installed" != true ]; then
+    if [ "$destination_replaced" = true ] && [ "$had_destination" = true ]; then
+      if mv -- "$backup" "$destination"; then
+        backup=""
+      else
+        echo "ERROR: failed to restore Claude oauth-env; original retained at $backup" >&2
+      fi
+    elif [ "$destination_replaced" = true ]; then
+      rm -f -- "$destination"
+    else
+      rm -f -- "$backup"
+      backup=""
+    fi
+  else
+    rm -f -- "$backup"
+    backup=""
+  fi
+  rm -f -- "$staging"
+  [ "$installed" = true ]
+}

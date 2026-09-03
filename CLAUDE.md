@@ -78,8 +78,17 @@ When running **inside the container** (workspace mounted at
   persisted volume), sourced from `.bashrc` (in-script `export` alone dies
   with setup process). Rotating token in Bitwarden does NOT auto-propagate —
   seed skips if file exists (keeps rebuilds headless). Force re-fetch:
-  delete `~/.claude/oauth-env` or `dc wipe-volumes`. Codex auth self-renews,
-  no action needed.
+  delete `~/.claude/oauth-env` or `dc wipe-volumes` — or now `dc claude-pull`
+  (no rebuild, no manual `rm`; `dc claude-push` writes the container's
+  current token back to the vault). Editing the Bitwarden item's Notes alone
+  does nothing until one of those runs. Unlike `dc codex-pull`, neither
+  touches the host's `~/.claude` — that's a separate interactive login — and
+  neither needs `--force`: the Claude token doesn't rotate in-container, so
+  there's no live-refresh to clobber. `devcontainer.json` forwards a host
+  `CLAUDE_CODE_OAUTH_TOKEN` env var in, which shadows `oauth-env` even after
+  a successful pull (`.bashrc` only sources the file when the var is unset);
+  `dc claude-pull` warns loudly when it detects that case. Codex auth
+  self-renews, no action needed.
 - issue-orchestrator self-updates every `dc up` via
   `@nickysagan/issue-orchestrator@latest` from npmjs → `~/.npm-global`
   (shadows Dockerfile-baked fallback). Traps:
