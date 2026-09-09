@@ -410,47 +410,73 @@ if ! grep -q "# --- agent-devcontainer npm-global PATH ---" "$BASHRC"; then
 export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 fi
-if npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest \
-    >/tmp/agent-cli-update.log 2>&1; then
-  echo "    claude: $(claude --version 2>/dev/null || echo unknown)"
-  echo "    codex:  $(codex --version 2>/dev/null || echo unknown)"
-else
-  echo "WARNING: agent CLI update failed — keeping baked-in versions."
-  echo "         See /tmp/agent-cli-update.log for details."
-fi
 
-# issue-orchestrator installs straight from npmjs, where it is published
-# publicly (Sadotu/issue-orchestrator#81). No registry configuration, no
-# .npmrc, no token, and no GitHub App permission is involved — which is the
-# whole reason it moved off GitHub Packages; see CLAUDE.md for that history.
-# Kept as its own non-fatal call rather than folded into the claude/codex
-# install above: `npm install -g a b c` resolves every argument before
-# installing any of them, so one unreachable package aborts the whole command
-# atomically and would silently stop claude/codex updating too.
-if npm install -g @nickysagan/issue-orchestrator@latest \
-    >/tmp/issue-orchestrator-update.log 2>&1; then
-  # Never probe with `issue-orchestrator --version`: the binary takes no flags,
-  # so any invocation starts the supervisor and its workers. Read npm's record.
-  echo "    issue-orchestrator: $(npm list -g @nickysagan/issue-orchestrator --depth=0 2>/dev/null | sed -n 's/.*issue-orchestrator@//p' || echo unknown)"
-else
-  echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
-  echo "         See /tmp/issue-orchestrator-update.log for details."
-fi
+# Read package metadata from both prefixes. The user prefix shadows /usr, so
+# its package is the effective version when present; otherwise the image-baked
+# package remains the usable fallback. Never execute a package entrypoint to
+# discover its version: issue-orchestrator and worktree-warden can start daemon
+# work when invoked.
+npm_prefix_package_version() {
+  local prefix="$1" package="$2" listing
+  listing="$(npm list --global --prefix "$prefix" "$package" --depth=0 --json 2>/dev/null || true)"
+  jq -r --arg package "$package" \
+    '.dependencies[$package].version // empty' <<<"$listing" 2>/dev/null || true
+}
 
-# worktree-warden: same npmjs-only, no-credential-needed rationale and same
-# atomic-failure-isolation reason for its own `npm install -g` call as
-# issue-orchestrator above.
-if npm install -g @nickysagan/worktree-warden@latest \
-    >/tmp/worktree-warden-update.log 2>&1; then
-  # Never probe with a bare `worktree-warden` (starts the watcher daemon) or
-  # any flag (every non-`status` argument is rejected as "unknown command"
-  # only after the daemon path is already skipped — still not a version
-  # probe). Read npm's record instead.
-  echo "    worktree-warden: $(npm list -g @nickysagan/worktree-warden --depth=0 2>/dev/null | sed -n 's/.*worktree-warden@//p' || echo unknown)"
-else
-  echo "WARNING: worktree-warden update failed — keeping baked-in vendored version."
-  echo "         See /tmp/worktree-warden-update.log for details."
-fi
+effective_npm_package_version() {
+  local package="$1" version
+  version="$(npm_prefix_package_version "$HOME/.npm-global" "$package")"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+  else
+    npm_prefix_package_version /usr "$package"
+  fi
+}
+
+report_npm_fallback() {
+  local label="$1" failure="$2" version="$3" log="$4"
+  if [ -n "$version" ]; then
+    echo "WARNING: $label $failure — keeping effective version $version."
+  else
+    echo "WARNING: $label $failure — no installed version is available."
+  fi
+  echo "         See $log for details."
+}
+
+update_npm_package() {
+  local package="$1" label="$2" log="$3" effective latest installed
+  effective="$(effective_npm_package_version "$package")"
+  : >"$log"
+  if ! latest="$(npm view "$package" version 2>"$log")" || [ -z "$latest" ]; then
+    report_npm_fallback "$label" "version check failed" "$effective" "$log"
+    return
+  fi
+  latest="${latest%%$'\n'*}"
+  latest="${latest%$'\r'}"
+
+  if [ "$effective" = "$latest" ]; then
+    echo "    $label: $effective (current)"
+    return
+  fi
+
+  if npm install -g "$package@$latest" >>"$log" 2>&1; then
+    installed="$(effective_npm_package_version "$package")"
+    echo "    $label: ${installed:-$latest} (updated)"
+  else
+    effective="$(effective_npm_package_version "$package")"
+    report_npm_fallback "$label" "update failed" "$effective" "$log"
+  fi
+}
+
+# Keep each package independent: one registry or install failure must not stop
+# freshness checks and useful updates for the remaining CLIs. Public npmjs
+# packages need no registry token, GitHub credential, or daemon invocation.
+update_npm_package @anthropic-ai/claude-code claude /tmp/claude-update.log
+update_npm_package @openai/codex codex /tmp/codex-update.log
+update_npm_package @nickysagan/issue-orchestrator issue-orchestrator \
+  /tmp/issue-orchestrator-update.log
+update_npm_package @nickysagan/worktree-warden worktree-warden \
+  /tmp/worktree-warden-update.log
 
 echo "==> Claude Code plugins/skills"
 # `marketplace add` / `plugin install` are safe to re-run, but they only ever

@@ -8,7 +8,8 @@
     "source=__PROJECT_NAME__-codex-config,target=/home/vscode/.codex,type=volume",
     "source=__PROJECT_NAME__-gh-config,target=/home/vscode/.config/gh,type=volume",
     "source=__PROJECT_NAME__-github-app-config,target=/home/vscode/.config/github-app,type=volume",
-    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume"
+    "source=__PROJECT_NAME__-shell-history,target=/home/vscode/.history,type=volume",
+    "source=__PROJECT_NAME__-npm-cache,target=/home/vscode/.npm,type=volume"
   ],
   "remoteUser": "vscode",
   "runArgs": ["--init", "--security-opt", "no-new-privileges", "--network=agent-services"],

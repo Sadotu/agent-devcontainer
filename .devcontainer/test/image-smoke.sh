@@ -24,12 +24,106 @@ assert_invalid_usage() {
     }
 }
 
+npm_update_source_test() (
+    local setup=$1 temp out status package key
+    local -a packages
+    temp="$(mktemp -d)"
+    mkdir -p "$temp/bin" "$temp/home" "$temp/state"/{baked,user,registry,view-fail,install-fail}
+
+    cat >"$temp/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPM_CALLS"
+key="${2//\//_}"
+case "${1:-}" in
+  config) exit 0 ;;
+  view)
+    [ ! -e "$NPM_STATE/view-fail/$key" ] || exit 28
+    cat "$NPM_STATE/registry/$key"
+    ;;
+  list)
+    package="${5:-}"
+    key="${package//\//_}"
+    [ "${4:-}" = "$HOME/.npm-global" ] && store=user || store=baked
+    if [ -r "$NPM_STATE/$store/$key" ]; then
+      version="$(cat "$NPM_STATE/$store/$key")"
+      printf '{"dependencies":{"%s":{"version":"%s"}}}\n' "$package" "$version"
+    else
+      printf '{"dependencies":{}}\n'
+      exit 1
+    fi
+    ;;
+  install)
+    spec="${3:-}"; version="${spec##*@}"; package="${spec%@*}"; key="${package//\//_}"
+    [ ! -e "$NPM_STATE/install-fail/$key" ] || exit 17
+    printf '%s\n' "$version" >"$NPM_STATE/user/$key"
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+    for package in issue-orchestrator worktree-warden; do
+        cat >"$temp/bin/$package" <<'EOF'
+#!/usr/bin/env bash
+echo invoked >>"$DAEMON_CALLS"
+exit 99
+EOF
+    done
+    chmod +x "$temp/bin/npm" "$temp/bin/issue-orchestrator" "$temp/bin/worktree-warden"
+
+    export HOME="$temp/home" BASHRC="$temp/bashrc" NPM_STATE="$temp/state"
+    export NPM_CALLS="$temp/npm-calls" DAEMON_CALLS="$temp/daemon-calls"
+    export PATH="$temp/bin:/usr/bin:/bin"
+    packages=(
+        @anthropic-ai/claude-code @openai/codex
+        @nickysagan/issue-orchestrator @nickysagan/worktree-warden
+    )
+    for package in "${packages[@]}"; do
+        key="${package//\//_}"
+        printf '1.0.0\n' >"$NPM_STATE/baked/$key"
+        printf '1.0.0\n' >"$NPM_STATE/registry/$key"
+    done
+
+    # Fresh user prefix: baked packages are effective and current, so setup
+    # checks registry freshness but performs no installs.
+    : >"$NPM_CALLS"
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed '$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    [[ $(grep -c '^view ' "$NPM_CALLS") -eq 4 ]]
+    ! grep -q '^install ' "$NPM_CALLS"
+    [[ $out == *'claude: 1.0.0 (current)'* ]]
+
+    # One lookup fails, one package updates, one remains current, and one
+    # install fails. Every package remains isolated and failures report the
+    # version that still wins PATH resolution.
+    printf '1.1.0\n' >"$NPM_STATE/user/@anthropic-ai_claude-code"
+    touch "$NPM_STATE/view-fail/@anthropic-ai_claude-code"
+    printf '2.0.0\n' >"$NPM_STATE/registry/@openai_codex"
+    printf '2.0.0\n' >"$NPM_STATE/registry/@nickysagan_worktree-warden"
+    touch "$NPM_STATE/install-fail/@nickysagan_worktree-warden"
+    : >"$NPM_CALLS"
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed '$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    grep -Fq 'claude version check failed — keeping effective version 1.1.0' <<<"$out"
+    grep -Fq 'codex: 2.0.0 (updated)' <<<"$out"
+    grep -Fq 'issue-orchestrator: 1.0.0 (current)' <<<"$out"
+    grep -Fq 'worktree-warden update failed — keeping effective version 1.0.0' <<<"$out"
+    [[ $(grep -c '^install ' "$NPM_CALLS") -eq 2 ]]
+    [[ ! -e "$DAEMON_CALLS" ]]
+    rm -rf "$temp"
+)
+
 source_test() {
     local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha
     local short_commit full_commit pkg_version expected_sha
     local output invocation curl_calls custom_curl_calls
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
+    npm_update_source_test "$devcontainer_dir/setup-agents.sh"
 
     # Derived from the Dockerfile itself (not hardcoded) so bumping the
     # vendored issue-orchestrator package can't leave this test asserting a
@@ -232,13 +326,6 @@ EOF
     grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/start-work.sh"
     grep -Fq 'worktree_warden_summary' "$devcontainer_dir/start-work.sh"
 
-    # setup-agents.sh: worktree-warden update block mirrors issue-orchestrator's
-    # (issue #63) — never probes with a bare/`--version` invocation (every
-    # non-`status` argument starts the daemon or is rejected, neither is a
-    # version probe), reads the version from `npm list -g` instead.
-    grep -Fq 'npm install -g @nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
-    grep -Fq 'npm list -g @nickysagan/worktree-warden' "$devcontainer_dir/setup-agents.sh"
-    ! grep -Eq '\bworktree-warden[[:space:]]+--version\b' "$devcontainer_dir/setup-agents.sh"
 }
 
 image_test() {
@@ -305,6 +392,7 @@ const config = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"));
 if (!config.runArgs.includes("--network=agent-services")) process.exit(1);
 if (config.containerEnv.SENTINEL_URL !== "http://usage-sentinel:4317") process.exit(1);
 if (config.postStartCommand !== "/opt/agent-devcontainer/start-worktree-warden.sh") process.exit(1);
+if (!config.mounts.includes("source=smoke-project-npm-cache,target=/home/vscode/.npm,type=volume")) process.exit(1);
 EOF
 
     container_id="$(docker run -d "$image" sleep 30)"
