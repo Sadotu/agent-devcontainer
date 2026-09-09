@@ -92,12 +92,6 @@ source_test() {
     grep -Fq "COPY vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
 
-    # worktree-warden vendor path must be part of the shared npm install -g
-    # block (same cache-clean layer as claude-code/codex/issue-orchestrator).
-    local ww_npm_install_block
-    ww_npm_install_block="$(sed -n '/^RUN npm install -g \\$/,/npm cache clean --force$/p' "$devcontainer_dir/Dockerfile")"
-    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" <<<"$ww_npm_install_block"
-
     # start-worktree-warden.sh / worktree-warden-summary.sh: baked onto the
     # image by another task running in parallel — only their Dockerfile
     # wiring is this task's concern, not their content.
@@ -252,11 +246,24 @@ image_test() {
         test "$(command -v gh)" = /usr/local/bin/gh &&
         test -x /usr/local/bin/gh &&
         command -v claude >/dev/null &&
+        command -v codex >/dev/null &&
+        command -v bw >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
         command -v worktree-warden >/dev/null &&
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
+    # Stage copies must preserve global package discovery, ownership and bin
+    # symlinks; both vendor entrypoints must still resolve their own modules.
+    docker run --rm "$image" bash -c '
+        npm list -g --depth=0 @nickysagan/issue-orchestrator @nickysagan/worktree-warden &&
+        for cli in issue-orchestrator worktree-warden; do
+            entry=$(readlink -f "$(command -v "$cli")")
+            test -x "$entry" && test "$(stat -c %U "$entry")" = root || exit 1
+        done
+    '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
+    docker run --rm "$image" node --input-type=module -e \
+        'import("node:fs").then(fs => import(fs.realpathSync("/usr/bin/issue-orchestrator")))'
     docker run --rm "$image" bash -c 'node --check "$(command -v worktree-warden)"'
 
     # worktree-warden (issue #63): inert presence checks only — a plain
@@ -268,9 +275,9 @@ image_test() {
         test -x /opt/agent-devcontainer/worktree-warden-summary.sh
     '
     # `worktree-warden status` must run cleanly with no state dir present
-    # (fresh container, no prior candidates) — no GitHub App token, no
+    # (fresh repository, no prior candidates) — no GitHub App token, no
     # network, no daemon start.
-    [[ "$(docker run --rm "$image" bash -c 'worktree-warden status')" == *'worktree-warden status'* ]]
+    [[ "$(docker run --rm "$image" bash -c 'git init -q /tmp/warden-smoke && cd /tmp/warden-smoke && worktree-warden status')" == *'worktree-warden status'* ]]
 
     # Version identifier is baked and inspectable from inside the container (issue #24).
     docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
@@ -296,7 +303,7 @@ image_test() {
     mkdir -p "$refresh_dir/.devcontainer"
     printf 'stale\n' >"$refresh_dir/.devcontainer/dc"
     printf 'stale\n' >"$refresh_dir/.devcontainer/devcontainer.json"
-    printf 'smoke-project\nSadotu\n4217970\ny\ny\n' | docker run --rm -i \
+    printf 'smoke-project\nSadotu\ny\ny\n' | docker run --rm -i \
         -v "$refresh_dir:/out" "$image" init >/dev/null
     test -x "$refresh_dir/.devcontainer/dc"
     grep -Fq 'sentinel-update)' "$refresh_dir/.devcontainer/dc"
