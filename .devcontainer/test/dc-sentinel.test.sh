@@ -66,6 +66,7 @@ mkdir -p "$TMP/bin"
 cat >"$TMP/bin/devcontainer" <<'EOF'
 #!/usr/bin/env bash
 printf 'devcontainer %s\n' "$*" >>"$FAKE_DOCKER_LOG"
+exit "${FAKE_DEVCONTAINER_RC:-0}"
 EOF
 cat >"$TMP/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -222,8 +223,14 @@ assert_log "--group-add $FAKE_SOCK_GID"
 assert_log "--health-cmd $FAKE_HEALTH_CMD"
 assert_log "--health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 10s"
 assert_log "--log-opt max-size=10m --log-opt max-file=3"
-# `up` is the only start path — it must always recreate from a clean build.
-assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container --build-no-cache"
+# `up` recreates the container while allowing unchanged build layers to be reused.
+assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container"
+assert_no_log "--build-no-cache"
+
+# A failed build/start must reach callers unchanged for automation to detect it.
+FAKE_DEVCONTAINER_RC=42 run_dc healthy up
+[ "$RC" -eq 42 ] || fail "devcontainer failure status lost: expected 42, got $RC"
+assert_log "devcontainer up --workspace-folder $ROOT --remove-existing-container"
 
 run_dc healthy up
 [ "$RC" -eq 0 ] || fail "healthy sentinel up failed"
