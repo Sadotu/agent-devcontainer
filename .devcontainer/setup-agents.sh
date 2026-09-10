@@ -16,9 +16,79 @@ SKILL_REFRESH_HANDOFF_PATH="${SKILL_REFRESH_HANDOFF_PATH:-/run/agent-devcontaine
 # the image (/opt/agent-devcontainer) and from the repo checkout (tests).
 _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Runtime counterpart to dc's standalone stage reporter. Only heartbeat work
+# runs in the background, preserving foreground prompts, output, and signals.
+# Static labels avoid exposing credentials or command arguments.
+STAGE_ACTIVE=0
+STAGE_LABEL=""
+STAGE_STARTED=0
+STAGE_HEARTBEAT_PID=""
+STAGE_WARNINGS=0
+
+stage_elapsed() {
+  local now
+  now="$(date +%s)"
+  printf '%s' "$((now - STAGE_STARTED))"
+}
+
+stage_stop_heartbeat() {
+  [ -n "$STAGE_HEARTBEAT_PID" ] || return 0
+  kill "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  STAGE_HEARTBEAT_PID=""
+}
+
+stage_begin() {
+  STAGE_LABEL="$1"
+  STAGE_STARTED="$(date +%s)"
+  STAGE_WARNINGS=0
+  STAGE_ACTIVE=1
+  printf '==> %s\n' "$STAGE_LABEL"
+  (
+    heartbeat_sleep_pid=""
+    trap '[ -z "$heartbeat_sleep_pid" ] || kill "$heartbeat_sleep_pid" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "${DC_STAGE_HEARTBEAT_SECONDS:-15}" &
+      heartbeat_sleep_pid=$!
+      wait "$heartbeat_sleep_pid" || exit 0
+      heartbeat_sleep_pid=""
+      printf '    Still working: %s (%ss elapsed)\n' \
+        "$STAGE_LABEL" "$(( $(date +%s) - STAGE_STARTED ))" >&2
+    done
+  ) &
+  STAGE_HEARTBEAT_PID=$!
+}
+
+stage_end() {
+  local elapsed outcome="completed"
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  [ "$STAGE_WARNINGS" -eq 0 ] || outcome="completed with warnings"
+  STAGE_ACTIVE=0
+  printf '==> %s %s in %ss\n' "$STAGE_LABEL" "$outcome" "$elapsed"
+}
+
+stage_fail() {
+  local status="$1" elapsed
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  STAGE_ACTIVE=0
+  printf 'ERROR: %s failed after %ss (exit %s).\n' \
+    "$STAGE_LABEL" "$elapsed" "$status" >&2
+}
+
+stage_on_exit() {
+  local status="$1"
+  if [ "$STAGE_ACTIVE" -eq 1 ]; then
+    stage_fail "$status"
+  fi
+}
+trap 'stage_on_exit "$?"' EXIT
+
 # Readiness marker (issue-orchestrator readiness contract, issue #31 / PR #46):
-# remove any stale marker before setup begins; it is re-created only as this
-# script's final successful action (end of file). Sourced, not executed.
+# remove any stale marker before setup begins; it is re-created only after all
+# required setup work succeeds, immediately before setup completion is reported.
+# Sourced, not executed.
 # shellcheck source=lib/setup-marker.sh
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
@@ -117,6 +187,8 @@ fi
 
 echo "==> Shared skills location"
 mkdir -p "$WORKSPACE/.agents/skills"
+
+stage_begin "Configuring credentials"
 
 # --- GitHub App identity (scoped, admin-free push/PR auth) --------------------
 # The container authenticates to GitHub as the configured App via short-lived
@@ -398,6 +470,9 @@ fi
 # reuse the same unlock — locking earlier would invalidate the session.
 bw_relock_if_ours
 
+stage_end
+
+stage_begin "Updating agent packages"
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
 # No sudo: --security-opt no-new-privileges disables it at runtime, and the
 # Dockerfile-baked /usr/bin/{claude,codex} live in root-owned /usr, which npm
@@ -438,6 +513,7 @@ effective_npm_package_version() {
 }
 
 report_npm_fallback() {
+  STAGE_WARNINGS=1
   local label="$1" failure="$2" version="$3" log="$4"
   if [ -n "$version" ]; then
     echo "WARNING: $label $failure — keeping effective version $version."
@@ -482,6 +558,10 @@ update_npm_package @nickysagan/issue-orchestrator issue-orchestrator \
 update_npm_package @nickysagan/worktree-warden worktree-warden \
   /tmp/worktree-warden-update.log
 
+
+stage_end
+
+stage_begin "Updating skills and plugins"
 echo "==> Claude Code plugins/skills"
 # `marketplace add` / `plugin install` are safe to re-run, but they only ever
 # create: an already-added marketplace or already-installed plugin just no-ops,
@@ -489,12 +569,12 @@ echo "==> Claude Code plugins/skills"
 # update` are the verbs that advance an existing install, and both exit 0 with
 # "already at the latest version" when there is nothing to do. `add` has to
 # stay and run first — `marketplace update` on a never-added name fails.
-claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin marketplace update superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || true
-claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || true
+claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin marketplace update superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
 # `plugin list` is an explicit read-only subcommand — never probe a version by
 # invoking the plugin itself (see the issue-orchestrator note above).
 sp_claude_version="$(claude plugin list --json 2>/dev/null \
@@ -559,6 +639,7 @@ if [ -n "$codex_sp_source_commit" ]; then
 fi
 
 if [ -z "$codex_sp_source_tree" ]; then
+  STAGE_WARNINGS=1
   echo "WARNING: failed to refresh openai/plugins for Codex superpowers."
   echo "         See /tmp/codex-superpowers-refresh.log for details."
   echo "         Keeping the Codex superpowers copy already on disk, if any."
@@ -590,40 +671,47 @@ JSON
     codex_sp_backup="$CODEX_SP_DIR.backup"
     rm -rf "$codex_sp_backup"
     if [ ! -e "$CODEX_SP_DIR" ]; then
-      mv "$codex_sp_staged" "$CODEX_SP_DIR" || \
+      mv "$codex_sp_staged" "$CODEX_SP_DIR" || {
+        STAGE_WARNINGS=1
         echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
+      }
     elif mv "$CODEX_SP_DIR" "$codex_sp_backup"; then
       if mv "$codex_sp_staged" "$CODEX_SP_DIR"; then
         rm -rf "$codex_sp_backup"
       else
         mv "$codex_sp_backup" "$CODEX_SP_DIR" || true
+        STAGE_WARNINGS=1
         echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
       fi
     else
+      STAGE_WARNINGS=1
       echo "WARNING: failed to preserve the existing Codex superpowers marketplace."
     fi
   else
+    STAGE_WARNINGS=1
     echo "WARNING: failed to materialize Codex superpowers from the refreshed source."
     echo "         Keeping the Codex superpowers copy already on disk, if any."
   fi
   rm -rf "$codex_sp_staged"
+
 fi
 if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
   # Re-running both is what advances the installed copy: `marketplace add`
   # re-reads the refreshed root, `plugin add` reinstalls the plugin from it.
-  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || true
-  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
+  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
 fi
 codex_sp_version="$(codex plugin list --json 2>/dev/null \
   | jq -r '.installed[] | select(.pluginId == "superpowers@superpowers-curated") | .version' 2>/dev/null || true)"
 echo "    superpowers (Codex): ${codex_sp_version:-unknown}"
+
+stage_end
 
 # Caveman for Codex: no plugin install needed — the skill files live in the
 # workspace's own .agents/skills/caveman* (Codex reads .agents/skills/
 # natively). Only warns when Caveman is not active — no opt-in required.
 caveman_policy_check "$WORKSPACE"
 
-echo "==> Done."
 echo ""
 echo "=== Manual checklist (not scriptable) ==="
 echo "1. Claude Code auth: browser '/login' does NOT work in this container."
@@ -662,3 +750,4 @@ echo "   / AGENTS.md). 'gh'/'git push' work automatically once step 2 is done."
 # set -e / bw_fail before here), so the marker's existence == setup complete.
 echo "==> Publishing readiness marker: $(setup_marker_path)"
 setup_marker_complete
+echo "==> Setup complete."
