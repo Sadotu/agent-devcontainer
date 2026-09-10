@@ -69,6 +69,10 @@ case "${FAKE_DEVCONTAINER_SCENARIO:-success}" in
     printf 'signal lifecycle diagnostic\n' >&2
     kill -TERM "$$"
     ;;
+  signal_parent)
+    printf 'parent signal diagnostic\n' >&2
+    kill -TERM "$PPID"
+    ;;
   prompt)
     printf 'credential response: '
     read -r response
@@ -188,6 +192,16 @@ run_dc up
 grep -Fq 'signal lifecycle diagnostic' "$TMP/err" || fail "signaled child diagnostic was hidden: $ERR"
 ! grep -Fq 'Ready: devcontainer startup complete' "$TMP/err" \
   || fail "signaled lifecycle reported final readiness: $ERR"
+
+# Terminating dc itself must report the signal status, even when its
+# foreground command succeeds after delivering that signal.
+export FAKE_DEVCONTAINER_SCENARIO=signal_parent
+run_dc up
+[ "$RC" -eq 143 ] || fail "signaled dc returned $RC instead of 143: $ERR"
+grep -Eq 'Building and recreating devcontainer failed after [0-9]+s \(exit 143\)' "$TMP/err" \
+  || fail "dc signal diagnostic reported the previous command status: $ERR"
+! grep -Fq 'Ready: devcontainer startup complete' "$TMP/err" \
+  || fail "signaled dc reported final readiness: $ERR"
 
 export FAKE_DEVCONTAINER_SCENARIO=prompt
 export FAKE_DC_INPUT='approved'

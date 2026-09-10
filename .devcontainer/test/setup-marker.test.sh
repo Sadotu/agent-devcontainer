@@ -92,6 +92,22 @@ grep -Fq 'bounded setup diagnostic' <<<"$OUT" || fail "required setup diagnostic
 grep -Eq 'Required setup work failed after [0-9]+s \(exit 29\)' <<<"$OUT" \
   || fail "required setup failure omitted stage, elapsed time, or status ($OUT)"
 
+# A signal delivered to the reporting shell must not reuse the previous
+# successful command's status in its failure diagnostic.
+stage_preamble >"$TMP/stage-preamble.sh"
+set +e
+OUT="$(bash -c '
+  set -euo pipefail
+  source "$1"
+  stage_begin "Signaled setup work"
+  kill -TERM "$$"
+' bash "$TMP/stage-preamble.sh" 2>&1)"
+rc=$?
+set -e
+[[ $rc -eq 143 ]] || fail "signaled setup stage returned $rc instead of 143 ($OUT)"
+grep -Eq 'Signaled setup work failed after [0-9]+s \(exit 143\)' <<<"$OUT" \
+  || fail "setup signal diagnostic reported the previous command status ($OUT)"
+
 # --- structural guard on setup-agents.sh wiring ---
 grep -q 'source .*lib/setup-marker.sh' "$SETUP" || fail "setup-agents.sh does not source the marker lib"
 # `|| true`: a missing pattern is exactly what the `[[ -n ... ]]` guards below
