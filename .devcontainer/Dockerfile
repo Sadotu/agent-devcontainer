@@ -8,7 +8,13 @@
 # - No host home dir, no ~/.ssh, no cloud credentials, no Docker socket.
 # - Agent auth tokens are entered manually after start and live in
 #   container-side named volumes, never on the host and never in the image.
-FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04 AS dependencies
+
+# CI changes this once per UTC day: the first publish that day refreshes all
+# floating apt/npm dependencies; later publishes reuse them. Local builds keep
+# Docker's normal cache behavior. Runtime CLI updates/offline fallback remain
+# in setup-agents.sh, independent of this baked-in dependency cache.
+ARG DEPENDENCY_CACHE_EPOCH=local
 
 # Base tooling
 RUN export DEBIAN_FRONTEND=noninteractive \
@@ -49,27 +55,6 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Issue Orchestrator package produced with `npm pack` from Sadotu/issue-orchestrator
-# commit 0667357e0270c2a400c3173d0104a1add6594180 (package version 0.2.0).
-# SHA-256 8459a92e39d5f7892d8ad5eeb5bcd02b623f943c66c33da7d162fb514fa6164e.
-# Baked-in fallback only, same role as Claude Code/Codex below —
-# setup-agents.sh shadows this at runtime with
-# @nickysagan/issue-orchestrator@latest from npmjs, which needs no credential
-# (Sadotu/issue-orchestrator#81).
-# Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
-# longer gates day-to-day issue-orchestrator freshness.
-COPY vendor/issue-orchestrator-0667357e0270.tgz /opt/agent-devcontainer/vendor/
-
-# Worktree Warden package produced with `npm pack` from Sadotu/worktree-warden
-# commit cfc33558708f4f341d11593fdeb42d7ea3ce701b (package version 0.1.0).
-# SHA-256 58cf888751738abd62062f35cdc5abea6832b9839fde5e5eb9719d73eba0089b.
-# Baked-in fallback only, same role as issue-orchestrator above —
-# start-worktree-warden.sh shadows this at runtime with
-# @nickysagan/worktree-warden@latest from npmjs, which needs no credential.
-# Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
-# longer gates day-to-day worktree-warden freshness.
-COPY vendor/worktree-warden-cfc33558708f.tgz /opt/agent-devcontainer/vendor/
-
 # Agent CLIs — Claude Code, OpenAI Codex.
 # Installed at build time (as root) as the baked-in fallback version.
 # setup-agents.sh updates both at runtime into a separate vscode-owned npm
@@ -80,9 +65,46 @@ RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @bitwarden/cli \
+    && npm cache clean --force
+
+# Build each vendor independently so either archive can change without
+# reinstalling the agent CLIs or the other vendor. The temporary global
+# prefixes contain only that package and its relative executable symlink.
+FROM dependencies AS issue-orchestrator
+
+# Issue Orchestrator package produced with `npm pack` from Sadotu/issue-orchestrator
+# commit 0667357e0270c2a400c3173d0104a1add6594180 (package version 0.2.0).
+# SHA-256 8459a92e39d5f7892d8ad5eeb5bcd02b623f943c66c33da7d162fb514fa6164e.
+# Baked-in fallback only, same role as Claude Code/Codex below —
+# setup-agents.sh shadows this at runtime with
+# @nickysagan/issue-orchestrator@latest from npmjs, which needs no credential
+# (Sadotu/issue-orchestrator#81).
+# Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
+# longer gates day-to-day issue-orchestrator freshness.
+COPY vendor/issue-orchestrator-0667357e0270.tgz /opt/agent-devcontainer/vendor/
+RUN npm install -g --prefix /opt/vendor \
         /opt/agent-devcontainer/vendor/issue-orchestrator-0667357e0270.tgz \
+    && npm cache clean --force
+
+FROM dependencies AS worktree-warden
+
+# Worktree Warden package produced with `npm pack` from Sadotu/worktree-warden
+# commit cfc33558708f4f341d11593fdeb42d7ea3ce701b (package version 0.1.0).
+# SHA-256 58cf888751738abd62062f35cdc5abea6832b9839fde5e5eb9719d73eba0089b.
+# Baked-in fallback only, same role as issue-orchestrator above —
+# start-worktree-warden.sh shadows this at runtime with
+# @nickysagan/worktree-warden@latest from npmjs, which needs no credential.
+# Bump this vendored tarball (`bump-vendor.sh`) only occasionally now; it no
+# longer gates day-to-day worktree-warden freshness.
+COPY vendor/worktree-warden-cfc33558708f.tgz /opt/agent-devcontainer/vendor/
+RUN npm install -g --prefix /opt/vendor \
         /opt/agent-devcontainer/vendor/worktree-warden-cfc33558708f.tgz \
     && npm cache clean --force
+
+FROM dependencies AS runtime
+# Merge the isolated global installs into NodeSource's normal global prefix.
+COPY --from=issue-orchestrator /opt/vendor/ /usr/
+COPY --from=worktree-warden /opt/vendor/ /usr/
 
 # Explicit user command for issue orchestration. Defining this in Bash startup
 # keeps image build and container startup inert.
