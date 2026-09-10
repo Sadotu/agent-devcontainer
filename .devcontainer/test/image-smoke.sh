@@ -37,6 +37,11 @@ key="${2//\//_}"
 case "${1:-}" in
   config) exit 0 ;;
   view)
+    if [ "${NPM_VIEW_HANGS:-}" = "$key" ]; then
+      sleep 30 </dev/null >/dev/null 2>&1 &
+      printf '%s\n' "$!" > "$NPM_VIEW_CHILD"
+      sleep 3
+    fi
     [ ! -e "$NPM_STATE/view-fail/$key" ] || exit 28
     cat "$NPM_STATE/registry/$key"
     ;;
@@ -53,7 +58,7 @@ case "${1:-}" in
     fi
     ;;
   install)
-    spec="${3:-}"; version="${spec##*@}"; package="${spec%@*}"; key="${package//\//_}"
+    spec="${@: -1}"; version="${spec##*@}"; package="${spec%@*}"; key="${package//\//_}"
     [ ! -e "$NPM_STATE/install-fail/$key" ] || exit 17
     printf '%s\n' "$version" >"$NPM_STATE/user/$key"
     ;;
@@ -114,6 +119,20 @@ EOF
     grep -Fq 'worktree-warden update failed — keeping effective version 1.0.0' <<<"$out"
     [[ $(grep -c '^install ' "$NPM_CALLS") -eq 2 ]]
     [[ ! -e "$DAEMON_CALLS" ]]
+
+    # Registry lookup shares the deadline, retains effective installed data,
+    # and stops its child before independent package checks continue.
+    export NPM_VIEW_HANGS=@openai_codex NPM_VIEW_CHILD="$temp/view-child"
+    export STARTUP_NETWORK_TIMEOUT_SECS=1
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    grep -Fq 'codex version check timed out after 1s — keeping effective version 2.0.0' <<<"$out"
+    [[ ! -e "/proc/$(cat "$NPM_VIEW_CHILD")" ]]
+    grep -Fq 'issue-orchestrator: 1.0.0 (current)' <<<"$out"
+    unset NPM_VIEW_HANGS NPM_VIEW_CHILD STARTUP_NETWORK_TIMEOUT_SECS
     rm -rf "$temp"
 )
 
@@ -226,8 +245,10 @@ source_test() {
     grep -Fq 'exec /usr/bin/gh "$@"' "$devcontainer_dir/ghx.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/landed.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/why-failed.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list' "$devcontainer_dir/refresh-skills.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'token="$("$tooldir/gh-app-token.sh")"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'GH_TOKEN="$token" exec /usr/bin/gh "$@"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr list' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr create' "$devcontainer_dir/refresh-skills.sh"
     grep -q 'GH_TOKEN=' "$devcontainer_dir/ghx.sh"
     # Never ENABLES xtrace (no `set -x`/`set -ex` in command position — comments
     # and the `set +x` defence below don't count), and DOES disable inherited

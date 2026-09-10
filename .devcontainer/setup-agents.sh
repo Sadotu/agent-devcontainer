@@ -478,6 +478,15 @@ stage_end
 
 stage_begin "Updating agent packages"
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
+# Network work in this section is unattended. Bound each missing network
+# boundary without touching interactive Bitwarden or device-login flows.
+# Tests may lower the default; production keeps enough time for cold npm data.
+STARTUP_NETWORK_TIMEOUT_SECS="${STARTUP_NETWORK_TIMEOUT_SECS:-120}"
+STARTUP_NETWORK_KILL_AFTER_SECS="${STARTUP_NETWORK_KILL_AFTER_SECS:-5}"
+run_unattended_network() {
+  timeout --kill-after="$STARTUP_NETWORK_KILL_AFTER_SECS" "$STARTUP_NETWORK_TIMEOUT_SECS" "$@"
+}
+
 # No sudo: --security-opt no-new-privileges disables it at runtime, and the
 # Dockerfile-baked /usr/bin/{claude,codex} live in root-owned /usr, which npm
 # can't rewrite even if the files themselves were chowned (rename needs write
@@ -493,6 +502,55 @@ if ! grep -q "# --- agent-devcontainer npm-global PATH ---" "$BASHRC"; then
 export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 fi
+
+# npm may have removed part of an existing global package before a download
+# stalls. Update a copied sibling prefix, then swap only after npm succeeds so
+# a timeout, failure, or TERM leaves the prior user installation runnable.
+install_staged_npm_update() (
+  log="$1"
+  shift
+  prefix="$HOME/.npm-global"
+  staged="$prefix.staged"
+  backup="$prefix.backup"
+
+  cleanup_staged_npm_update() {
+    status=$?
+    rm -rf "$staged"
+    if [ -e "$backup" ] && [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" 2>/dev/null || true
+    fi
+    exit "$status"
+  }
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap cleanup_staged_npm_update EXIT
+
+  # Recover the only interruption window in the preceding activation. A baked
+  # CLI remains on PATH even if an untrappable stop occurred in that window.
+  if [ -e "$backup" ]; then
+    if [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" || return 1
+    else
+      rm -rf "$backup"
+    fi
+  fi
+  rm -rf "$staged"
+  mkdir -p "$staged"
+  if [ -d "$prefix" ]; then
+    cp -a "$prefix/." "$staged/" || return 1
+  fi
+
+  run_unattended_network npm install -g --prefix "$staged" "$@" >"$log" 2>&1 || return $?
+  if [ -e "$prefix" ]; then
+    mv "$prefix" "$backup" || return 1
+  fi
+  if mv "$staged" "$prefix"; then
+    rm -rf "$backup"
+  else
+    [ -e "$prefix" ] || mv "$backup" "$prefix" 2>/dev/null || true
+    return 1
+  fi
+)
 
 # Read package metadata from both prefixes. The user prefix shadows /usr, so
 # its package is the effective version when present; otherwise the image-baked
@@ -518,7 +576,12 @@ effective_npm_package_version() {
 
 report_npm_fallback() {
   STAGE_WARNINGS=1
-  local label="$1" failure="$2" version="$3" log="$4"
+  local label="$1" failure="$2" version="$3" log="$4" status="${5:-1}"
+  if [ "$status" -eq 124 ]; then
+    failure="${failure% failed} timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s"
+  elif [ "$status" -eq 137 ]; then
+    failure="${failure% failed} was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline"
+  fi
   if [ -n "$version" ]; then
     echo "WARNING: $label $failure — keeping effective version $version."
   else
@@ -528,11 +591,14 @@ report_npm_fallback() {
 }
 
 update_npm_package() {
-  local package="$1" label="$2" log="$3" effective latest installed
+  local package="$1" label="$2" log="$3" effective latest installed status
   effective="$(effective_npm_package_version "$package")"
   : >"$log"
-  if ! latest="$(npm view "$package" version 2>"$log")" || [ -z "$latest" ]; then
-    report_npm_fallback "$label" "version check failed" "$effective" "$log"
+  if latest="$(run_unattended_network npm view "$package" version 2>"$log")" && [ -n "$latest" ]; then
+    :
+  else
+    status=$?
+    report_npm_fallback "$label" "version check failed" "$effective" "$log" "$status"
     return
   fi
   latest="${latest%%$'\n'*}"
@@ -543,12 +609,13 @@ update_npm_package() {
     return
   fi
 
-  if npm install -g "$package@$latest" >>"$log" 2>&1; then
+  if install_staged_npm_update "$log" "$package@$latest"; then
     installed="$(effective_npm_package_version "$package")"
     echo "    $label: ${installed:-$latest} (updated)"
   else
+    status=$?
     effective="$(effective_npm_package_version "$package")"
-    report_npm_fallback "$label" "update failed" "$effective" "$log"
+    report_npm_fallback "$label" "update failed" "$effective" "$log" "$status"
   fi
 }
 
@@ -617,22 +684,27 @@ CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
 CODEX_SP_CACHE="$HOME/.codex/cache/openai-plugins.git"
 codex_sp_cache_staged="$CODEX_SP_CACHE.staged"
 codex_sp_source_commit=""
+codex_sp_network_status=0
 codex_sp_source_tree=""
 mkdir -p "$(dirname "$CODEX_SP_CACHE")"
 
 if git -C "$CODEX_SP_CACHE" rev-parse --git-dir >/dev/null 2>&1; then
-  if git -C "$CODEX_SP_CACHE" fetch --depth 1 origin HEAD \
+  if run_unattended_network git -C "$CODEX_SP_CACHE" fetch --depth 1 origin HEAD \
       >/tmp/codex-superpowers-refresh.log 2>&1; then
     codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse FETCH_HEAD 2>/dev/null || true)"
+  else
+    codex_sp_network_status=$?
   fi
 else
   rm -rf "$codex_sp_cache_staged"
-  if git clone --bare --depth 1 https://github.com/openai/plugins "$codex_sp_cache_staged" \
+  if run_unattended_network git clone --bare --depth 1 https://github.com/openai/plugins "$codex_sp_cache_staged" \
       >/tmp/codex-superpowers-refresh.log 2>&1; then
     rm -rf "$CODEX_SP_CACHE"
     if mv "$codex_sp_cache_staged" "$CODEX_SP_CACHE"; then
       codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse HEAD 2>/dev/null || true)"
     fi
+  else
+    codex_sp_network_status=$?
   fi
   rm -rf "$codex_sp_cache_staged"
 fi
@@ -644,7 +716,13 @@ fi
 
 if [ -z "$codex_sp_source_tree" ]; then
   STAGE_WARNINGS=1
-  echo "WARNING: failed to refresh openai/plugins for Codex superpowers."
+  if [ "$codex_sp_network_status" -eq 124 ]; then
+    echo "WARNING: refreshing openai/plugins for Codex superpowers timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s."
+  elif [ "$codex_sp_network_status" -eq 137 ]; then
+    echo "WARNING: refreshing openai/plugins was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline."
+  else
+    echo "WARNING: failed to refresh openai/plugins for Codex superpowers."
+  fi
   echo "         See /tmp/codex-superpowers-refresh.log for details."
   echo "         Keeping the Codex superpowers copy already on disk, if any."
 elif [ ! -d "$CODEX_SP_DIR/plugins/superpowers" ] || \
