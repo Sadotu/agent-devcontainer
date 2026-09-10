@@ -51,6 +51,91 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTAINER_LABEL="devcontainer.local_folder=$ROOT"
 PROJECT_NAME="${PROJECT_NAME:-$(basename "$ROOT")}"
 
+# Stage reporting stays inline because dc is copied into consumer repositories
+# as a standalone script. Only the heartbeat is backgrounded; stage commands
+# remain in the foreground so terminal input, output, and signals behave as
+# they did before. Messages contain static labels, never command arguments.
+STAGE_ACTIVE=0
+STAGE_LABEL=""
+STAGE_STARTED=0
+STAGE_HEARTBEAT_PID=""
+
+stage_elapsed() {
+  local now
+  now="$(date +%s)"
+  printf '%s' "$((now - STAGE_STARTED))"
+}
+
+stage_stop_heartbeat() {
+  [ -n "$STAGE_HEARTBEAT_PID" ] || return 0
+  kill "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  STAGE_HEARTBEAT_PID=""
+}
+
+stage_begin() {
+  STAGE_LABEL="$1"
+  STAGE_STARTED="$(date +%s)"
+  STAGE_ACTIVE=1
+  printf '==> %s\n' "$STAGE_LABEL" >&2
+  (
+    heartbeat_sleep_pid=""
+    trap '[ -z "$heartbeat_sleep_pid" ] || kill "$heartbeat_sleep_pid" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "${DC_STAGE_HEARTBEAT_SECONDS:-15}" &
+      heartbeat_sleep_pid=$!
+      wait "$heartbeat_sleep_pid" || exit 0
+      heartbeat_sleep_pid=""
+      printf '    Still working: %s (%ss elapsed)\n' \
+        "$STAGE_LABEL" "$(( $(date +%s) - STAGE_STARTED ))" >&2
+    done
+  ) &
+  STAGE_HEARTBEAT_PID=$!
+}
+
+stage_end() {
+  local elapsed
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  STAGE_ACTIVE=0
+  printf '==> %s completed in %ss\n' "$STAGE_LABEL" "$elapsed" >&2
+}
+
+stage_fail() {
+  local status="$1" elapsed
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  STAGE_ACTIVE=0
+  printf 'ERROR: %s failed after %ss (exit %s).\n' \
+    "$STAGE_LABEL" "$elapsed" "$status" >&2
+}
+
+stage_on_exit() {
+  local status="$1"
+  if [ "$STAGE_ACTIVE" -eq 1 ]; then
+    stage_fail "$status"
+  fi
+}
+# Bash's EXIT trap can see the previous command's zero status when the
+# reporting shell receives a signal. Map signals before reporting cleanup.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'stage_on_exit "$?"' EXIT
+
+run_stage() {
+  local label="$1" status
+  shift
+  stage_begin "$label"
+  if "$@"; then
+    stage_end
+    return 0
+  else
+    status=$?
+    stage_fail "$status"
+    return "$status"
+  fi
+}
+
 require() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "ERROR: '$1' not found. $2" >&2
@@ -509,11 +594,15 @@ ensure_sentinel() {
 
 case "$cmd" in
   up)
+    stage_begin "Preparing services and images"
     ensure_sentinel
     pull_image
     warn_if_dc_drifted
     ensure_warden_hook
-    devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    stage_end
+    run_stage "Building and recreating devcontainer" \
+      devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    echo "==> Ready: devcontainer startup complete." >&2
     ;;
   self-update)
     self_update_dc

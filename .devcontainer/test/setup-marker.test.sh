@@ -58,6 +58,56 @@ set -e
 [[ $rc -ne 0 ]] || fail "failure-path wrapper unexpectedly succeeded"
 [[ -e "$FAILMARK" ]] && fail "marker written despite failed setup"
 
+# Exercise setup's real reporting functions without running external setup
+# operations. A missing warning outcome or EXIT cleanup breaks user-visible
+# optional/required failure reporting even when marker plumbing still works.
+stage_preamble() {
+  sed -n '/^STAGE_ACTIVE=0$/,/^trap .*stage_on_exit.* EXIT$/p' "$SETUP"
+}
+
+OUT="$(
+  source <(stage_preamble)
+  stage_begin "Optional setup work"
+  STAGE_WARNINGS=1
+  stage_end
+  trap - EXIT
+  exit 0
+  )" || fail "optional stage probe failed ($OUT)"
+grep -Eq '^==> Optional setup work completed with warnings in [0-9]+s$' <<<"$OUT" \
+  || fail "optional stage did not report warning outcome ($OUT)"
+
+set +e
+OUT="$(
+  (
+    source <(stage_preamble)
+    stage_begin "Required setup work"
+    printf 'bounded setup diagnostic\n' >&2
+    exit 29
+  ) 2>&1
+)"
+rc=$?
+set -e
+[[ $rc -eq 29 ]] || fail "required setup stage returned $rc instead of 29 ($OUT)"
+grep -Fq 'bounded setup diagnostic' <<<"$OUT" || fail "required setup diagnostic was hidden ($OUT)"
+grep -Eq 'Required setup work failed after [0-9]+s \(exit 29\)' <<<"$OUT" \
+  || fail "required setup failure omitted stage, elapsed time, or status ($OUT)"
+
+# A signal delivered to the reporting shell must not reuse the previous
+# successful command's status in its failure diagnostic.
+stage_preamble >"$TMP/stage-preamble.sh"
+set +e
+OUT="$(bash -c '
+  set -euo pipefail
+  source "$1"
+  stage_begin "Signaled setup work"
+  kill -TERM "$$"
+' bash "$TMP/stage-preamble.sh" 2>&1)"
+rc=$?
+set -e
+[[ $rc -eq 143 ]] || fail "signaled setup stage returned $rc instead of 143 ($OUT)"
+grep -Eq 'Signaled setup work failed after [0-9]+s \(exit 143\)' <<<"$OUT" \
+  || fail "setup signal diagnostic reported the previous command status ($OUT)"
+
 # --- structural guard on setup-agents.sh wiring ---
 grep -q 'source .*lib/setup-marker.sh' "$SETUP" || fail "setup-agents.sh does not source the marker lib"
 # `|| true`: a missing pattern is exactly what the `[[ -n ... ]]` guards below
@@ -66,12 +116,20 @@ grep -q 'source .*lib/setup-marker.sh' "$SETUP" || fail "setup-agents.sh does no
 # trailing-grep pipefail gotcha).
 reset_line="$(grep -n '^setup_marker_reset' "$SETUP" | head -1 | cut -d: -f1 || true)"
 complete_line="$(grep -n '^setup_marker_complete' "$SETUP" | head -1 | cut -d: -f1 || true)"
+setup_done_line="$(grep -n '^echo "==> Setup complete' "$SETUP" | head -1 | cut -d: -f1 || true)"
+premature_done="$(grep -n '^echo "==> Done' "$SETUP" || true)"
 first_work="$(grep -n 'Fixing ownership of persisted config volumes' "$SETUP" | head -1 | cut -d: -f1)"
 checklist="$(grep -n 'Manual checklist' "$SETUP" | head -1 | cut -d: -f1)"
 [[ -n "$reset_line" ]] || fail "setup-agents.sh never calls setup_marker_reset"
 [[ -n "$complete_line" ]] || fail "setup-agents.sh never calls setup_marker_complete"
+[[ -n "$setup_done_line" ]] || fail "setup-agents.sh never reports setup completion"
+[[ -z "$premature_done" ]] || fail "setup-agents.sh still reports premature Done before readiness publication"
 [[ "$reset_line" -lt "$first_work" ]] || fail "setup_marker_reset not called before first work step"
-[[ "$complete_line" -gt "$checklist" ]] || fail "setup_marker_complete not the final action (before checklist)"
+[[ "$complete_line" -gt "$checklist" ]] || fail "setup_marker_complete runs before checklist finishes"
+[[ "$complete_line" -lt "$setup_done_line" ]] || fail "setup completion is reported before readiness marker publication"
+for stage in "Configuring credentials" "Updating agent packages" "Updating skills and plugins"; do
+  grep -Fq "stage_begin \"$stage\"" "$SETUP" || fail "setup omits $stage stage"
+done
 
 # --- image provides a writable runtime directory without changing /run ---
 grep -Eq 'mkdir -p( -m [0-9]+)? /run/agent-devcontainer' "$DOCKERFILE" \
