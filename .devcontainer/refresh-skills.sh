@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Re-resolves declared skills (dotagents) to their source's latest commit.
 # Baked into the image at /opt/agent-devcontainer/refresh-skills.sh and
-# called from BOTH setup-agents.sh (postCreate) and start-worktree-warden.sh
-# (postStart) — see issue #92: postCreate-only re-resolution left a container
-# serving stale skills for its whole lifetime between rebuilds.
+# called from setup-agents.sh (postCreate) and start-worktree-warden.sh
+# (postStart). Setup may request a one-shot handoff marker after successful
+# runtime materialization; postStart consumes it once so fresh creation does
+# not repeat the work, while every later restart still refreshes (#130).
 #
 # Contract mirrors start-worktree-warden.sh: no `set -e`, every not-ready
 # condition prints one line and exits 0 — this must never fail whichever
@@ -16,6 +17,7 @@ fi
 PROJECT_NAME="${PROJECT_NAME:-}"
 GH_OWNER="${GH_OWNER:-}"
 GITHUB_APP_DIR="${GITHUB_APP_DIR:-$HOME/.config/github-app}"
+REFRESH_SKILLS_HANDOFF="${REFRESH_SKILLS_HANDOFF:-}"
 
 # Resolve this script's own dir so TOOLDIR defaults correctly both baked into
 # the image (/opt/agent-devcontainer) and from a repo checkout (tests), same
@@ -243,21 +245,24 @@ cleanup_refresh_state() {
 }
 
 materialize_runtime_skills() {
-  local status=0
+  local status=0 restore_status=0
   if ! save_primary_lock; then
     echo "WARNING: could not preserve agents.lock in the primary worktree — self-authored skills unavailable this run."
-    return 0
+    return 1
   fi
 
   install_dotagents "$WORKSPACE" || status=$?
-  restore_primary_lock || \
+  restore_primary_lock || {
+    restore_status=1
     echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+  }
 
   if [ "$status" -eq 124 ]; then
     echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
   elif [ "$status" -ne 0 ]; then
     echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
   fi
+  [ "$status" -eq 0 ] && [ "$restore_status" -eq 0 ]
 }
 
 resolve_and_bump_agents_lock() {
@@ -322,6 +327,7 @@ resolve_and_bump_agents_lock() {
 
 refresh_agents_lock() {
   (
+    materialized=0
     flock -w 300 200 || {
       echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
       exit 0
@@ -334,8 +340,12 @@ refresh_agents_lock() {
       exit 0
     fi
     cleanup_resolution_worktree
-    materialize_runtime_skills
+    materialize_runtime_skills && materialized=1
     resolve_and_bump_agents_lock
+    if [ "$materialized" -eq 1 ] && [ -n "$REFRESH_SKILLS_HANDOFF" ]; then
+      mkdir -p "$REFRESH_SKILLS_HANDOFF" || \
+        echo "WARNING: could not publish successful skill-refresh handoff."
+    fi
   ) 200>"$BUMP_FLOCK"
 }
 
