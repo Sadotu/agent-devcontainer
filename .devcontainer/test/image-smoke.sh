@@ -86,7 +86,7 @@ EOF
     # checks registry freshness but performs no installs.
     : >"$NPM_CALLS"
     set +e
-    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed '$d' | source /dev/stdin 2>&1)"
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
     status=$?
     set -e
     [[ $status -eq 0 ]]
@@ -104,7 +104,7 @@ EOF
     touch "$NPM_STATE/install-fail/@nickysagan_worktree-warden"
     : >"$NPM_CALLS"
     set +e
-    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed '$d' | source /dev/stdin 2>&1)"
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
     status=$?
     set -e
     [[ $status -eq 0 ]]
