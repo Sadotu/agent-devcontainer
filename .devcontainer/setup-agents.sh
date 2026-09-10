@@ -82,6 +82,10 @@ stage_on_exit() {
     stage_fail "$status"
   fi
 }
+# Bash's EXIT trap can see the previous command's zero status when the
+# reporting shell receives a signal. Map signals before reporting cleanup.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 trap 'stage_on_exit "$?"' EXIT
 
 # Readiness marker (issue-orchestrator readiness contract, issue #31 / PR #46):
