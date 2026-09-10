@@ -418,5 +418,16 @@ echo "==> Self-authored skills (dotagents)"
 # Bounded so a hung download can never wedge container start (postStart) or
 # postCreate. REFRESH_SKILLS_TIMEOUT overrides the 120s default for tests.
 timeout_secs="${REFRESH_SKILLS_TIMEOUT:-120}"
-refresh_agents_lock
+if [ "${REFRESH_SKILLS_REPORT_WARNINGS:-}" = 1 ]; then
+  refresh_output="$(mktemp)"
+  trap 'rm -f "$refresh_output"' EXIT
+  refresh_agents_lock 2>&1 | tee "$refresh_output"
+  refresh_status=( "${PIPESTATUS[@]}" )
+  if [ "${refresh_status[0]}" -ne 0 ] || [ "${refresh_status[1]}" -ne 0 ] || \
+      grep -q '^WARNING:' "$refresh_output"; then
+    exit 10
+  fi
+else
+  refresh_agents_lock
+fi
 exit 0

@@ -92,6 +92,37 @@ grep -Fq 'bounded setup diagnostic' <<<"$OUT" || fail "required setup diagnostic
 grep -Eq 'Required setup work failed after [0-9]+s \(exit 29\)' <<<"$OUT" \
   || fail "required setup failure omitted stage, elapsed time, or status ($OUT)"
 
+# A warning-only skill refresh remains nonfatal but must change the enclosing
+# setup stage outcome while preserving the child's live diagnostic output.
+mkdir -p "$TMP/refresh-tool"
+cat >"$TMP/refresh-tool/refresh-skills.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'refresh timeout diagnostic\n'
+[ "${REFRESH_SKILLS_REPORT_WARNINGS:-}" = 1 ] && exit 10
+exit 0
+EOF
+chmod +x "$TMP/refresh-tool/refresh-skills.sh"
+refresh_invocation() {
+  sed -n '/^# Propagate refresh warnings to this setup stage/,/^fi$/p' "$SETUP"
+}
+OUT="$(
+  source <(stage_preamble)
+  stage_begin "Updating skills and plugins"
+  WORKSPACE="$TMP/workspace"
+  TOOLDIR="$TMP/refresh-tool"
+  PROJECT_NAME=test
+  GH_OWNER=owner
+  GITHUB_APP_DIR="$TMP/github-app"
+  SKILL_REFRESH_HANDOFF_PATH="$TMP/handoff"
+  source <(refresh_invocation)
+  stage_end
+  trap - EXIT
+)" || fail "warning refresh setup-stage probe failed ($OUT)"
+grep -Fq 'refresh timeout diagnostic' <<<"$OUT" \
+  || fail "refresh warning output was hidden ($OUT)"
+grep -Eq '^==> Updating skills and plugins completed with warnings in [0-9]+s$' <<<"$OUT" \
+  || fail "refresh warning did not mark setup stage ($OUT)"
+
 # A signal delivered to the reporting shell must not reuse the previous
 # successful command's status in its failure diagnostic.
 stage_preamble >"$TMP/stage-preamble.sh"

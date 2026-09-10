@@ -662,10 +662,17 @@ echo "    superpowers (Claude): ${sp_claude_version:-unknown}"
 # rot after it moved to the github-pr-cleanup skill upstream. It's a separate
 # script (not inlined here) so start-worktree-warden.sh's postStart can call
 # the exact same logic on every container start, not just create (#92).
-WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
-  GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
-  REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH" \
-  "$TOOLDIR/refresh-skills.sh"
+# Propagate refresh warnings to this setup stage through an invocation-scoped
+# exit status. The refresh remains nonfatal and keeps streaming its output.
+if REFRESH_SKILLS_REPORT_WARNINGS=1 \
+    WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
+    GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
+    REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH" \
+    "$TOOLDIR/refresh-skills.sh"; then
+  :
+else
+  STAGE_WARNINGS=1
+fi
 
 echo "==> Codex plugins/skills"
 # Codex reserves the marketplace name "openai-curated" (what openai/plugins'

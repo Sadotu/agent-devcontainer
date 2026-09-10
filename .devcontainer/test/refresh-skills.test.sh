@@ -659,9 +659,10 @@ refresh_line="$(grep -n 'REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH"' "
 reset_workspace
 NETWORK_DESCENDANT_PID="$TMP/fetch-descendant-pid"
 FETCH_STARTED_MS="$(date +%s%3N)"
-run STARTUP_NETWORK_TIMEOUT_SECS=1 GIT_FETCH_HANGS=1 NETWORK_DESCENDANT_PID="$NETWORK_DESCENDANT_PID"
+run REFRESH_SKILLS_REPORT_WARNINGS=1 STARTUP_NETWORK_TIMEOUT_SECS=1 \
+  GIT_FETCH_HANGS=1 NETWORK_DESCENDANT_PID="$NETWORK_DESCENDANT_PID"
 FETCH_ELAPSED_MS=$(( $(date +%s%3N) - FETCH_STARTED_MS ))
-[[ $STATUS -eq 0 ]] || fail "case 14: stalled fetch exited $STATUS: $OUT"
+[[ $STATUS -eq 10 ]] || fail "case 14: setup-mode stalled fetch exited $STATUS instead of warning status 10: $OUT"
 [[ "$OUT" == *"fetching origin/main timed out after 1s"* ]] \
   || fail "case 14: fetch timeout not reported: $OUT"
 [[ "$FETCH_ELAPSED_MS" -lt 2500 ]] || fail "case 14: fetch took ${FETCH_ELAPSED_MS}ms"
