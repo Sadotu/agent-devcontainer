@@ -10,6 +10,7 @@ set -euo pipefail
 WORKSPACE="/workspaces/$PROJECT_NAME"
 TOOLDIR="/opt/agent-devcontainer"
 BASHRC="$HOME/.bashrc"
+SKILL_REFRESH_HANDOFF_PATH="${SKILL_REFRESH_HANDOFF_PATH:-/run/agent-devcontainer/postcreate-skill-refresh}"
 
 # Resolve this script's own dir so its sourceable libs work both baked into
 # the image (/opt/agent-devcontainer) and from the repo checkout (tests).
@@ -21,6 +22,9 @@ _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/setup-marker.sh
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
+# Any handoff from an interrupted or manually repeated setup is stale until
+# this run proves runtime skills materialized successfully.
+rmdir "$SKILL_REFRESH_HANDOFF_PATH" 2>/dev/null || true
 
 # Caveman policy check (issue #65) — advisory, runs unconditionally, silent
 # when Caveman is already active. Sourced, not executed.
@@ -483,6 +487,7 @@ echo "    superpowers (Claude): ${sp_claude_version:-unknown}"
 # the exact same logic on every container start, not just create (#92).
 WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
   GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
+  REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH" \
   "$TOOLDIR/refresh-skills.sh"
 
 echo "==> Codex plugins/skills"
@@ -492,22 +497,55 @@ echo "==> Codex plugins/skills"
 # name. Manifest path/shape: <root>/.agents/plugins/marketplace.json, plugin
 # content under <root>/plugins/<name>/.
 #
-# Re-download on every run rather than only when the directory is missing:
-# `codex plugin marketplace upgrade` refreshes *Git* marketplace snapshots
-# only, and this one is local by necessity, so nothing else would ever advance
-# it — and ~/.codex persists across rebuilds, which is how Codex stayed pinned
-# to whatever version landed first. Stage the new tree beside the live one and
-# swap, so a failed download leaves the working copy untouched and content
-# deleted upstream does not linger in a "refreshed" install.
+# Keep a shallow bare source cache under the persisted ~/.codex volume. Each
+# setup still fetches the remote head, but an unchanged plugin tree reuses local
+# data instead of cloning and materializing the whole plugin again. Changed
+# content is staged from a complete Git tree and swapped wholesale, so files
+# removed upstream do not linger. Any fetch/materialization failure leaves the
+# usable live marketplace untouched and the next setup retries.
 CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
-tmp_clone="$(mktemp -d)"
-if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
-    >/tmp/codex-superpowers-clone.log 2>&1; then
+CODEX_SP_CACHE="$HOME/.codex/cache/openai-plugins.git"
+codex_sp_cache_staged="$CODEX_SP_CACHE.staged"
+codex_sp_source_commit=""
+codex_sp_source_tree=""
+mkdir -p "$(dirname "$CODEX_SP_CACHE")"
+
+if git -C "$CODEX_SP_CACHE" rev-parse --git-dir >/dev/null 2>&1; then
+  if git -C "$CODEX_SP_CACHE" fetch --depth 1 origin HEAD \
+      >/tmp/codex-superpowers-refresh.log 2>&1; then
+    codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse FETCH_HEAD 2>/dev/null || true)"
+  fi
+else
+  rm -rf "$codex_sp_cache_staged"
+  if git clone --bare --depth 1 https://github.com/openai/plugins "$codex_sp_cache_staged" \
+      >/tmp/codex-superpowers-refresh.log 2>&1; then
+    rm -rf "$CODEX_SP_CACHE"
+    if mv "$codex_sp_cache_staged" "$CODEX_SP_CACHE"; then
+      codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse HEAD 2>/dev/null || true)"
+    fi
+  fi
+  rm -rf "$codex_sp_cache_staged"
+fi
+
+if [ -n "$codex_sp_source_commit" ]; then
+  codex_sp_source_tree="$(git -C "$CODEX_SP_CACHE" \
+    rev-parse "$codex_sp_source_commit:plugins/superpowers" 2>/dev/null || true)"
+fi
+
+if [ -z "$codex_sp_source_tree" ]; then
+  echo "WARNING: failed to refresh openai/plugins for Codex superpowers."
+  echo "         See /tmp/codex-superpowers-refresh.log for details."
+  echo "         Keeping the Codex superpowers copy already on disk, if any."
+elif [ ! -d "$CODEX_SP_DIR/plugins/superpowers" ] || \
+     [ ! -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ] || \
+     [ ! -f "$CODEX_SP_DIR/.source-tree" ] || \
+     [ "$(cat "$CODEX_SP_DIR/.source-tree")" != "$codex_sp_source_tree" ]; then
   codex_sp_staged="$CODEX_SP_DIR.staged"
   rm -rf "$codex_sp_staged"
-  mkdir -p "$codex_sp_staged/plugins/superpowers" "$codex_sp_staged/.agents/plugins"
-  cp -r "$tmp_clone/plugins/superpowers/." "$codex_sp_staged/plugins/superpowers/"
-  cat > "$codex_sp_staged/.agents/plugins/marketplace.json" <<'JSON'
+  mkdir -p "$codex_sp_staged" "$codex_sp_staged/.agents/plugins"
+  if git -C "$CODEX_SP_CACHE" archive "$codex_sp_source_commit" plugins/superpowers \
+      | tar -x -C "$codex_sp_staged"; then
+    cat > "$codex_sp_staged/.agents/plugins/marketplace.json" <<'JSON'
 {
   "name": "superpowers-curated",
   "interface": { "displayName": "Superpowers (official plugin, local marketplace)" },
@@ -521,14 +559,29 @@ if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
   ]
 }
 JSON
-  rm -rf "$CODEX_SP_DIR"
-  mv "$codex_sp_staged" "$CODEX_SP_DIR"
-else
-  echo "WARNING: failed to clone openai/plugins for Codex superpowers."
-  echo "         See /tmp/codex-superpowers-clone.log for details."
-  echo "         Keeping the Codex superpowers copy already on disk, if any."
+    printf '%s\n' "$codex_sp_source_commit" > "$codex_sp_staged/.source-commit"
+    printf '%s\n' "$codex_sp_source_tree" > "$codex_sp_staged/.source-tree"
+    codex_sp_backup="$CODEX_SP_DIR.backup"
+    rm -rf "$codex_sp_backup"
+    if [ ! -e "$CODEX_SP_DIR" ]; then
+      mv "$codex_sp_staged" "$CODEX_SP_DIR" || \
+        echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
+    elif mv "$CODEX_SP_DIR" "$codex_sp_backup"; then
+      if mv "$codex_sp_staged" "$CODEX_SP_DIR"; then
+        rm -rf "$codex_sp_backup"
+      else
+        mv "$codex_sp_backup" "$CODEX_SP_DIR" || true
+        echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
+      fi
+    else
+      echo "WARNING: failed to preserve the existing Codex superpowers marketplace."
+    fi
+  else
+    echo "WARNING: failed to materialize Codex superpowers from the refreshed source."
+    echo "         Keeping the Codex superpowers copy already on disk, if any."
+  fi
+  rm -rf "$codex_sp_staged"
 fi
-rm -rf "$tmp_clone"
 if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
   # Re-running both is what advances the installed copy: `marketplace add`
   # re-reads the refreshed root, `plugin add` reinstalls the plugin from it.

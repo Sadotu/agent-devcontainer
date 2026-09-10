@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$ROOT/.devcontainer/refresh-skills.sh"
+SETUP="$ROOT/.devcontainer/setup-agents.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -594,5 +595,38 @@ kill -0 "$HANDOFF_PID" 2>/dev/null && fail "case 13: pre-handoff child survived 
 run
 [[ $STATUS -eq 0 ]] || fail "case 13: restart after pre-handoff crash exited $STATUS: $OUT"
 [[ ! -e "$HANDOFF_FILE" ]] || fail "case 13: restart left handoff state behind"
+
+# =========================================================================
+# Case 14 (#130): an invocation-scoped lifecycle handoff is published only
+# after runtime skills materialize successfully. The script still exits zero
+# on installer failure, but must leave no false-success marker so postStart
+# retries instead of skipping.
+# =========================================================================
+LIFECYCLE_HANDOFF="$TMP/postcreate-skill-refresh"
+reset_workspace
+run REFRESH_SKILLS_HANDOFF="$LIFECYCLE_HANDOFF"
+[[ $STATUS -eq 0 ]] || fail "case 14: successful refresh exited $STATUS: $OUT"
+[[ -d "$LIFECYCLE_HANDOFF" ]] || \
+  fail "case 14: successful runtime refresh did not publish handoff: $OUT"
+
+rmdir "$LIFECYCLE_HANDOFF"
+reset_workspace
+run REFRESH_SKILLS_HANDOFF="$LIFECYCLE_HANDOFF" INSTALL_FAILS=1
+[[ $STATUS -eq 0 ]] || fail "case 14: failed refresh broke nonfatal contract: $OUT"
+[[ ! -e "$LIFECYCLE_HANDOFF" ]] || fail "case 14: failed runtime refresh published false-success handoff"
+[[ "$OUT" == *"WARNING: dotagents install failed"* ]] || \
+  fail "case 14: failed runtime refresh warning missing: $OUT"
+reset_workspace
+run REFRESH_SKILLS_HANDOFF="$LIFECYCLE_HANDOFF"
+[[ $STATUS -eq 0 && -d "$LIFECYCLE_HANDOFF" ]] || \
+  fail "case 14: later refresh did not retry and publish handoff: $OUT"
+
+# Setup alone requests publication and clears any stale handoff before work;
+# postStart's regular refresh explicitly passes an empty request instead.
+grep -Fq 'REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH"' "$SETUP" || \
+  fail "case 14: setup does not request a successful refresh handoff"
+reset_line="$(grep -n 'rmdir "$SKILL_REFRESH_HANDOFF_PATH"' "$SETUP" | head -1 | cut -d: -f1)"
+refresh_line="$(grep -n 'REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH"' "$SETUP" | head -1 | cut -d: -f1)"
+[[ "$reset_line" -lt "$refresh_line" ]] || fail "case 14: setup does not clear stale handoff before refresh"
 
 echo "PASS: refresh-skills.test.sh"
