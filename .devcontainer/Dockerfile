@@ -94,9 +94,9 @@ RUN printf '\nsource /etc/profile.d/start-work.sh\n' >> /etc/bash.bashrc
 # ownership) on first mount — without this the dir comes up root-owned and
 # sudo can't fix it later, because runArgs sets --security-opt
 # no-new-privileges, which disables sudo entirely.
-RUN mkdir -p /home/vscode/.claude /home/vscode/.codex \
+RUN mkdir -p /home/vscode/.claude /home/vscode/.codex /home/vscode/.npm \
         /home/vscode/.config/gh /home/vscode/.config/github-app /home/vscode/.history \
-    && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex \
+    && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.npm \
         /home/vscode/.config /home/vscode/.history
 
 # setup-agents.sh runs as vscode and needs a writable location for its
