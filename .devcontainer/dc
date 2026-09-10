@@ -8,7 +8,7 @@
 # workspace directory's name; override by exporting PROJECT_NAME if the repo
 # dir doesn't match the name declared in devcontainer.json's containerEnv.
 #
-#   ./.devcontainer/dc up        rebuild the image from scratch, recreate the
+#   ./.devcontainer/dc up        build the image with cached layers, recreate the
 #                                  container, and start it (runs postCreate);
 #                                  also refreshes usage-sentinel on a digest change
 #   ./.devcontainer/dc shell     open an interactive bash shell inside
@@ -212,7 +212,7 @@ dc_image() {
 
 # Re-pull the referenced image before creating the container. Without this,
 # a floating tag like :latest silently reuses whatever digest is in the
-# local Docker cache — `devcontainer up`, even with --build-no-cache, never
+# local Docker cache — `devcontainer up` never
 # passes --pull, so published image updates (setup-agents.sh fixes, CLI
 # bumps) would not reach this machine. No-op for a `build`-based
 # devcontainer.json (no "image" key) and non-fatal offline.
@@ -513,7 +513,7 @@ case "$cmd" in
     pull_image
     warn_if_dc_drifted
     ensure_warden_hook
-    devcontainer up --workspace-folder "$ROOT" --remove-existing-container --build-no-cache
+    devcontainer up --workspace-folder "$ROOT" --remove-existing-container
     ;;
   self-update)
     self_update_dc
