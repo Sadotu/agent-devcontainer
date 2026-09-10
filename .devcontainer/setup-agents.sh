@@ -395,6 +395,15 @@ fi
 bw_relock_if_ours
 
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
+# Network work in this section is unattended. Bound each missing network
+# boundary without touching interactive Bitwarden or device-login flows.
+# Tests may lower the default; production keeps enough time for cold npm data.
+STARTUP_NETWORK_TIMEOUT_SECS="${STARTUP_NETWORK_TIMEOUT_SECS:-120}"
+STARTUP_NETWORK_KILL_AFTER_SECS="${STARTUP_NETWORK_KILL_AFTER_SECS:-5}"
+run_unattended_network() {
+  timeout --kill-after="$STARTUP_NETWORK_KILL_AFTER_SECS" "$STARTUP_NETWORK_TIMEOUT_SECS" "$@"
+}
+
 # No sudo: --security-opt no-new-privileges disables it at runtime, and the
 # Dockerfile-baked /usr/bin/{claude,codex} live in root-owned /usr, which npm
 # can't rewrite even if the files themselves were chowned (rename needs write
@@ -410,12 +419,69 @@ if ! grep -q "# --- agent-devcontainer npm-global PATH ---" "$BASHRC"; then
 export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 fi
-if npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest \
-    >/tmp/agent-cli-update.log 2>&1; then
+
+# npm may have removed part of an existing global package before a download
+# stalls. Update a copied sibling prefix, then swap only after npm succeeds so
+# a timeout, failure, or TERM leaves the prior user installation runnable.
+install_staged_npm_update() (
+  log="$1"
+  shift
+  prefix="$HOME/.npm-global"
+  staged="$prefix.staged"
+  backup="$prefix.backup"
+
+  cleanup_staged_npm_update() {
+    status=$?
+    rm -rf "$staged"
+    if [ -e "$backup" ] && [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" 2>/dev/null || true
+    fi
+    exit "$status"
+  }
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap cleanup_staged_npm_update EXIT
+
+  # Recover the only interruption window in the preceding activation. A baked
+  # CLI remains on PATH even if an untrappable stop occurred in that window.
+  if [ -e "$backup" ]; then
+    if [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" || return 1
+    else
+      rm -rf "$backup"
+    fi
+  fi
+  rm -rf "$staged"
+  mkdir -p "$staged"
+  if [ -d "$prefix" ]; then
+    cp -a "$prefix/." "$staged/" || return 1
+  fi
+
+  run_unattended_network npm install -g --prefix "$staged" "$@" >"$log" 2>&1 || return $?
+  if [ -e "$prefix" ]; then
+    mv "$prefix" "$backup" || return 1
+  fi
+  if mv "$staged" "$prefix"; then
+    rm -rf "$backup"
+  else
+    [ -e "$prefix" ] || mv "$backup" "$prefix" 2>/dev/null || true
+    return 1
+  fi
+)
+
+if install_staged_npm_update /tmp/agent-cli-update.log \
+    @anthropic-ai/claude-code@latest @openai/codex@latest; then
   echo "    claude: $(claude --version 2>/dev/null || echo unknown)"
   echo "    codex:  $(codex --version 2>/dev/null || echo unknown)"
 else
-  echo "WARNING: agent CLI update failed — keeping baked-in versions."
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: agent CLI update timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — keeping prior versions."
+  elif [ "$status" -eq 137 ]; then
+    echo "WARNING: agent CLI update was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — keeping prior versions."
+  else
+    echo "WARNING: agent CLI update failed — keeping prior versions."
+  fi
   echo "         See /tmp/agent-cli-update.log for details."
 fi
 
@@ -427,28 +493,42 @@ fi
 # install above: `npm install -g a b c` resolves every argument before
 # installing any of them, so one unreachable package aborts the whole command
 # atomically and would silently stop claude/codex updating too.
-if npm install -g @nickysagan/issue-orchestrator@latest \
-    >/tmp/issue-orchestrator-update.log 2>&1; then
+if install_staged_npm_update /tmp/issue-orchestrator-update.log \
+    @nickysagan/issue-orchestrator@latest; then
   # Never probe with `issue-orchestrator --version`: the binary takes no flags,
   # so any invocation starts the supervisor and its workers. Read npm's record.
   echo "    issue-orchestrator: $(npm list -g @nickysagan/issue-orchestrator --depth=0 2>/dev/null | sed -n 's/.*issue-orchestrator@//p' || echo unknown)"
 else
-  echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: issue-orchestrator update timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — keeping prior version."
+  elif [ "$status" -eq 137 ]; then
+    echo "WARNING: issue-orchestrator update was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — keeping prior version."
+  else
+    echo "WARNING: issue-orchestrator update failed — keeping prior version."
+  fi
   echo "         See /tmp/issue-orchestrator-update.log for details."
 fi
 
 # worktree-warden: same npmjs-only, no-credential-needed rationale and same
 # atomic-failure-isolation reason for its own `npm install -g` call as
 # issue-orchestrator above.
-if npm install -g @nickysagan/worktree-warden@latest \
-    >/tmp/worktree-warden-update.log 2>&1; then
+if install_staged_npm_update /tmp/worktree-warden-update.log \
+    @nickysagan/worktree-warden@latest; then
   # Never probe with a bare `worktree-warden` (starts the watcher daemon) or
   # any flag (every non-`status` argument is rejected as "unknown command"
   # only after the daemon path is already skipped — still not a version
   # probe). Read npm's record instead.
   echo "    worktree-warden: $(npm list -g @nickysagan/worktree-warden --depth=0 2>/dev/null | sed -n 's/.*worktree-warden@//p' || echo unknown)"
 else
-  echo "WARNING: worktree-warden update failed — keeping baked-in vendored version."
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: worktree-warden update timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — keeping prior version."
+  elif [ "$status" -eq 137 ]; then
+    echo "WARNING: worktree-warden update was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — keeping prior version."
+  else
+    echo "WARNING: worktree-warden update failed — keeping prior version."
+  fi
   echo "         See /tmp/worktree-warden-update.log for details."
 fi
 
@@ -501,7 +581,7 @@ echo "==> Codex plugins/skills"
 # deleted upstream does not linger in a "refreshed" install.
 CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
 tmp_clone="$(mktemp -d)"
-if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
+if run_unattended_network git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
     >/tmp/codex-superpowers-clone.log 2>&1; then
   codex_sp_staged="$CODEX_SP_DIR.staged"
   rm -rf "$codex_sp_staged"
@@ -524,7 +604,14 @@ JSON
   rm -rf "$CODEX_SP_DIR"
   mv "$codex_sp_staged" "$CODEX_SP_DIR"
 else
-  echo "WARNING: failed to clone openai/plugins for Codex superpowers."
+  status=$?
+  if [ "$status" -eq 124 ]; then
+    echo "WARNING: cloning openai/plugins for Codex superpowers timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s."
+  elif [ "$status" -eq 137 ]; then
+    echo "WARNING: cloning openai/plugins was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline."
+  else
+    echo "WARNING: failed to clone openai/plugins for Codex superpowers."
+  fi
   echo "         See /tmp/codex-superpowers-clone.log for details."
   echo "         Keeping the Codex superpowers copy already on disk, if any."
 fi

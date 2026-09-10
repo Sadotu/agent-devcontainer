@@ -61,6 +61,25 @@ ACTIVE_INSTALL_PID=""
 ACTIVE_INSTALL_START=""
 ACTIVE_INSTALL_SUPERVISOR_PID=""
 
+# dotagents has its own supervised deadline below. These helpers cover only
+# the later Git/GitHub network boundaries that run outside that installer.
+STARTUP_NETWORK_TIMEOUT_SECS="${STARTUP_NETWORK_TIMEOUT_SECS:-120}"
+STARTUP_NETWORK_KILL_AFTER_SECS="${STARTUP_NETWORK_KILL_AFTER_SECS:-5}"
+run_unattended_network() {
+  timeout --kill-after="$STARTUP_NETWORK_KILL_AFTER_SECS" "$STARTUP_NETWORK_TIMEOUT_SECS" "$@"
+}
+
+# Token minting calls GitHub too, so keep it in the same bounded process group
+# as gh rather than expanding the token in this parent shell.
+run_unattended_gh() {
+  run_unattended_network bash -c '
+    tooldir="$1"
+    shift
+    token="$("$tooldir/gh-app-token.sh")" || exit $?
+    GH_TOKEN="$token" exec /usr/bin/gh "$@"
+  ' _ "$TOOLDIR" "$@"
+}
+
 proc_start_identity() {
   local stat rest
   IFS= read -r stat < "/proc/$1/stat" || return 1
@@ -261,9 +280,18 @@ materialize_runtime_skills() {
 }
 
 resolve_and_bump_agents_lock() {
-  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status
-  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
-    echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status gh_status
+  run_unattended_network git -C "$WORKSPACE" fetch -q origin main \
+    >/tmp/agents-lock-bump.log 2>&1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: fetching origin/main timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    elif [ "$status" -eq 137 ]; then
+      echo "WARNING: fetching origin/main was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — see /tmp/agents-lock-bump.log."
+    else
+      echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    fi
     return 0
   fi
 
@@ -295,22 +323,59 @@ resolve_and_bump_agents_lock() {
   # Commit the detached resolution and publish it directly to the one fixed
   # remote branch. No local bump branch exists, so interrupted old worktrees
   # cannot pin that branch or influence the generated lock.
-  if git -C "$bump_wt" add agents.lock && \
-     git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
+  if ! git -C "$bump_wt" add agents.lock || \
+     ! git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
-       commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
-     git -C "$bump_wt" push -qf origin "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
-    existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list \
-      --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
-      --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)" || existing_pr=""
-    if [ -n "$existing_pr" ]; then
-      bump_pr_url="$existing_pr"
+       commit -qm "chore: bump agents.lock skill pins (auto, dc up)"; then
+    echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
+  run_unattended_network git -C "$bump_wt" push -qf origin \
+    "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: agents.lock push timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+    elif [ "$status" -eq 137 ]; then
+      echo "WARNING: agents.lock push was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
     else
-      bump_pr_url="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create \
-        --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$BUMP_BRANCH" \
-        --title "chore: bump agents.lock skill pins" \
-        --body "Automated \`agents.lock\` pin bump — skills re-resolved to their source's latest commit. Review the diff before merging." \
-        2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
+      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    fi
+    return 0
+  fi
+
+  existing_pr="$(run_unattended_gh pr list \
+    --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
+    --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)"
+  gh_status=$?
+  if [ "$gh_status" -ne 0 ]; then
+    if [ "$gh_status" -eq 124 ]; then
+      echo "WARNING: agents.lock PR lookup timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+    elif [ "$gh_status" -eq 137 ]; then
+      echo "WARNING: agents.lock PR lookup was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
+    else
+      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    fi
+    return 0
+  fi
+  if [ -n "$existing_pr" ]; then
+    bump_pr_url="$existing_pr"
+  else
+    bump_pr_url="$(run_unattended_gh pr create \
+      --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$BUMP_BRANCH" \
+      --title "chore: bump agents.lock skill pins" \
+      --body "Automated \`agents.lock\` pin bump — skills re-resolved to their source's latest commit. Review the diff before merging." \
+      2>>/tmp/agents-lock-bump.log)"
+    gh_status=$?
+    if [ "$gh_status" -eq 124 ]; then
+      echo "WARNING: agents.lock PR creation timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+      return 0
+    elif [ "$gh_status" -eq 137 ]; then
+      echo "WARNING: agents.lock PR creation was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
+      return 0
+    elif [ "$gh_status" -ne 0 ]; then
+      bump_pr_url=""
     fi
   fi
   if [ -n "$bump_pr_url" ]; then

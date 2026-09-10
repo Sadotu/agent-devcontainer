@@ -123,6 +123,11 @@ cat > "$STUB_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
 if [ "$1" = pr ] && [ "$2" = list ]; then
+  if [ -n "${GH_LIST_HANGS:-}" ]; then
+    sleep 30 </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" > "$NETWORK_DESCENDANT_PID"
+    sleep 3
+  fi
   if [ -n "${EXISTING_PR_URL:-}" ]; then
     printf '%s\n' "$EXISTING_PR_URL"
   elif [ -s "$GH_STATE_FILE" ]; then
@@ -158,10 +163,20 @@ cat >> "$STUB_DIR/git" <<'EOF'
 # $1 is "-C", not the subcommand — match "push" anywhere in the argv instead.
 case " $* " in
   *' fetch '*)
+    if [ -n "${GIT_FETCH_HANGS:-}" ]; then
+      sleep 30 </dev/null >/dev/null 2>&1 &
+      printf '%s\n' "$!" > "$NETWORK_DESCENDANT_PID"
+      sleep 3
+    fi
     [ -z "${GIT_FETCH_FAILS:-}" ] || { echo "git: stub fetch failure" >&2; exit 1; }
     ;;
   *' push '*)
     echo "$@" >> "$GIT_PUSH_LOG"
+    if [ -n "${GIT_PUSH_HANGS:-}" ]; then
+      sleep 30 </dev/null >/dev/null 2>&1 &
+      printf '%s\n' "$!" > "$NETWORK_DESCENDANT_PID"
+      sleep 3
+    fi
     [ -z "${GIT_PUSH_FAILS:-}" ] || { echo "git: stub push failure" >&2; exit 1; }
     exec "$REAL_GIT" -C "$2" push --no-verify "${@:4}"
     ;;
@@ -235,6 +250,15 @@ reset_workspace() {
   : > "$RESOLUTION_MANIFEST_CAPTURE"
 }
 gh_call_count() { grep -c '^pr ' "$GH_LOG" 2>/dev/null || true; }
+assert_network_descendant_stopped() {
+  local pid label="$1"
+  pid="$(cat "$NETWORK_DESCENDANT_PID")"
+  for _ in $(seq 1 50); do
+    [ ! -e "/proc/$pid" ] && return 0
+    sleep 0.02
+  done
+  fail "$label left network descendant $pid running"
+}
 
 # =========================================================================
 # Case 1: WORKSPACE is not a git repo -> one line, exit 0, install never run.
@@ -594,5 +618,58 @@ kill -0 "$HANDOFF_PID" 2>/dev/null && fail "case 13: pre-handoff child survived 
 run
 [[ $STATUS -eq 0 ]] || fail "case 13: restart after pre-handoff crash exited $STATUS: $OUT"
 [[ ! -e "$HANDOFF_FILE" ]] || fail "case 13: restart left handoff state behind"
+
+# =========================================================================
+# Case 14: stalled fetch is bounded as one process group. Runtime skills stay
+# usable, publication never starts, and later startup retries successfully.
+# =========================================================================
+reset_workspace
+NETWORK_DESCENDANT_PID="$TMP/fetch-descendant-pid"
+FETCH_STARTED_MS="$(date +%s%3N)"
+run STARTUP_NETWORK_TIMEOUT_SECS=1 GIT_FETCH_HANGS=1 NETWORK_DESCENDANT_PID="$NETWORK_DESCENDANT_PID"
+FETCH_ELAPSED_MS=$(( $(date +%s%3N) - FETCH_STARTED_MS ))
+[[ $STATUS -eq 0 ]] || fail "case 14: stalled fetch exited $STATUS: $OUT"
+[[ "$OUT" == *"fetching origin/main timed out after 1s"* ]] \
+  || fail "case 14: fetch timeout not reported: $OUT"
+[[ "$FETCH_ELAPSED_MS" -lt 2500 ]] || fail "case 14: fetch took ${FETCH_ELAPSED_MS}ms"
+[[ "$(gh_call_count)" -eq 0 ]] || fail "case 14: publication continued after fetch timeout"
+assert_network_descendant_stopped "case 14"
+run
+[[ $STATUS -eq 0 ]] || fail "case 14: later retry exited $STATUS: $OUT"
+
+# =========================================================================
+# Case 15: stalled push is bounded and cannot continue into PR lookup. Primary
+# state is restored; a later startup can publish the same pending lock change.
+# =========================================================================
+reset_workspace
+NETWORK_DESCENDANT_PID="$TMP/push-descendant-pid"
+run STARTUP_NETWORK_TIMEOUT_SECS=1 GIT_PUSH_HANGS=1 NETWORK_DESCENDANT_PID="$NETWORK_DESCENDANT_PID" \
+  NEW_LOCK_FILE="$LOCK_V4"
+[[ $STATUS -eq 0 ]] || fail "case 15: stalled push exited $STATUS: $OUT"
+[[ "$OUT" == *"agents.lock push timed out after 1s"* ]] \
+  || fail "case 15: push timeout not reported: $OUT"
+[[ "$(gh_call_count)" -eq 0 ]] || fail "case 15: PR lookup ran after push timeout"
+cmp -s "$LOCK_BASE" "$WORKSPACE_DIR/agents.lock" || fail "case 15: primary lock was not restored"
+assert_network_descendant_stopped "case 15"
+run NEW_LOCK_FILE="$LOCK_V4"
+[[ $STATUS -eq 0 ]] || fail "case 15: later retry exited $STATUS: $OUT"
+grep -Fq 'pr create' "$GH_LOG" || fail "case 15: later retry did not publish"
+
+# =========================================================================
+# Case 16: GitHub token/CLI boundary includes a stalled gh descendant. Timeout
+# is nonfatal, no create follows an unknown list result, and startup retries.
+# =========================================================================
+reset_workspace
+NETWORK_DESCENDANT_PID="$TMP/gh-descendant-pid"
+run STARTUP_NETWORK_TIMEOUT_SECS=1 GH_LIST_HANGS=1 NETWORK_DESCENDANT_PID="$NETWORK_DESCENDANT_PID" \
+  NEW_LOCK_FILE="$LOCK_V3"
+[[ $STATUS -eq 0 ]] || fail "case 16: stalled PR lookup exited $STATUS: $OUT"
+[[ "$OUT" == *"agents.lock PR lookup timed out after 1s"* ]] \
+  || fail "case 16: PR lookup timeout not reported: $OUT"
+grep -Fq 'pr create' "$GH_LOG" && fail "case 16: PR create followed timed-out lookup"
+assert_network_descendant_stopped "case 16"
+run NEW_LOCK_FILE="$LOCK_V3"
+[[ $STATUS -eq 0 ]] || fail "case 16: later retry exited $STATUS: $OUT"
+grep -Fq 'pr create' "$GH_LOG" || fail "case 16: later retry did not create PR"
 
 echo "PASS: refresh-skills.test.sh"

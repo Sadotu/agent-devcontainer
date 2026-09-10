@@ -138,8 +138,10 @@ source_test() {
     grep -Fq 'exec /usr/bin/gh "$@"' "$devcontainer_dir/ghx.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/landed.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/why-failed.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list' "$devcontainer_dir/refresh-skills.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'token="$("$tooldir/gh-app-token.sh")"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'GH_TOKEN="$token" exec /usr/bin/gh "$@"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr list' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr create' "$devcontainer_dir/refresh-skills.sh"
     grep -q 'GH_TOKEN=' "$devcontainer_dir/ghx.sh"
     # Never ENABLES xtrace (no `set -x`/`set -ex` in command position — comments
     # and the `set +x` defence below don't count), and DOES disable inherited
@@ -236,7 +238,7 @@ EOF
     # (issue #63) — never probes with a bare/`--version` invocation (every
     # non-`status` argument starts the daemon or is rejected, neither is a
     # version probe), reads the version from `npm list -g` instead.
-    grep -Fq 'npm install -g @nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
+    grep -Fq '@nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
     grep -Fq 'npm list -g @nickysagan/worktree-warden' "$devcontainer_dir/setup-agents.sh"
     ! grep -Eq '\bworktree-warden[[:space:]]+--version\b' "$devcontainer_dir/setup-agents.sh"
 }
