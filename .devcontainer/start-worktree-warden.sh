@@ -46,6 +46,7 @@ export PATH="$HOME/.npm-global/bin:$PATH"
 # since refresh-skills.sh is baked alongside this script.
 _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLDIR="${TOOLDIR:-$_SETUP_DIR}"
+SKILL_REFRESH_HANDOFF_PATH="${SKILL_REFRESH_HANDOFF_PATH:-/run/agent-devcontainer/postcreate-skill-refresh}"
 
 # --- 2. Setup must have completed at least once ------------------------------
 # shellcheck source=lib/setup-marker.sh
@@ -57,39 +58,49 @@ fi
 
 GITHUB_APP_DIR="$HOME/.config/github-app"
 
-# Steps 3-7 (the warden autostart itself) are wrapped in a function that
-# `return`s on each not-ready condition instead of exiting the whole script —
-# unlike the setup-marker check above, none of these conditions (App creds,
-# the warden CLI, tmux) should also block step 8's skill refresh below: the
-# core resolve step needs neither GitHub App creds nor the warden CLI, only
-# its own bump-PR path (opening a PR for a moved skill pin) needs creds, and
-# that path already degrades gracefully on its own if they're absent.
+# --- 3. Finish this lifecycle's skill refresh before workers start -----------
+# A successful postCreate refresh leaves an empty one-shot directory. rmdir is
+# atomic, so only one postStart can consume it. All later starts run a fresh
+# check. Regular postStart refreshes explicitly decline publishing a new
+# handoff, otherwise each restart would incorrectly suppress the next one.
+if rmdir "$SKILL_REFRESH_HANDOFF_PATH" 2>/dev/null; then
+  echo "refresh-skills: skills already refreshed during setup — skipping duplicate."
+else
+  WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="${PROJECT_NAME:-}" \
+    GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
+    REFRESH_SKILLS_HANDOFF="" "$TOOLDIR/refresh-skills.sh"
+fi
+
+# Steps 4-8 (the Warden autostart itself) are wrapped in a function that
+# `return`s on each not-ready condition instead of exiting the whole script.
+# Skill refresh has already finished above, independent of Warden credentials
+# and tooling, before any worker can start.
 start_worktree_warden() {
-  # --- 3. GitHub App credentials must be present ------------------------------
+  # --- 4. GitHub App credentials must be present ------------------------------
   if [ ! -r "$GITHUB_APP_DIR/private-key.pem" ] || [ ! -r "$GITHUB_APP_DIR/app-id" ]; then
     echo "worktree-warden: GitHub App credentials not present yet — skipping autostart."
     return 0
   fi
 
-  # --- 4. worktree-warden CLI must be installed -------------------------------
+  # --- 5. worktree-warden CLI must be installed -------------------------------
   if ! command -v worktree-warden >/dev/null 2>&1; then
     echo "worktree-warden: CLI not found on PATH — skipping autostart."
     return 0
   fi
 
-  # --- 5. tmux must be available (defensive; always baked into this image) ---
+  # --- 6. tmux must be available (defensive; always baked into this image) ---
   if ! command -v tmux >/dev/null 2>&1; then
     echo "worktree-warden: tmux not found on PATH — skipping autostart."
     return 0
   fi
 
-  # --- 6. Primary duplicate-prevention layer: an existing tmux session -------
+  # --- 7. Primary duplicate-prevention layer: an existing tmux session -------
   if tmux has-session -t worktree-warden 2>/dev/null; then
     echo "worktree-warden: tmux session 'worktree-warden' already running — skipping autostart."
     return 0
   fi
 
-  # --- 7. Start it, backgrounded in its own tmux session ----------------------
+  # --- 8. Start it, backgrounded in its own tmux session ----------------------
   # worktree-warden only ever appends its results to warden.log (fs.appendFile,
   # see its src/log.js) — it never writes to stdout/stderr, so the tmux pane
   # would show nothing at all on its own. Issue #63 requires failures to
@@ -136,15 +147,4 @@ start_worktree_warden() {
   fi
 }
 start_worktree_warden
-
-# --- 8. Re-resolve self-authored skills (issue #92) ---------------------------
-# Runs after the warden autostart above so a slow/failed refresh never delays
-# the daemon — and independent of whether the warden itself started, since
-# the core resolve step needs neither GitHub App creds nor the warden CLI.
-# Same script setup-agents.sh calls at postCreate — see there and
-# refresh-skills.sh itself for its own not-ready/timeout contract, which
-# already guarantees this never fails container start.
-WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="${PROJECT_NAME:-}" \
-  GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
-  "$TOOLDIR/refresh-skills.sh"
 exit 0

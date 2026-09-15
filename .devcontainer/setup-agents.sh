@@ -10,17 +10,95 @@ set -euo pipefail
 WORKSPACE="/workspaces/$PROJECT_NAME"
 TOOLDIR="/opt/agent-devcontainer"
 BASHRC="$HOME/.bashrc"
+SKILL_REFRESH_HANDOFF_PATH="${SKILL_REFRESH_HANDOFF_PATH:-/run/agent-devcontainer/postcreate-skill-refresh}"
 
 # Resolve this script's own dir so its sourceable libs work both baked into
 # the image (/opt/agent-devcontainer) and from the repo checkout (tests).
 _SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Runtime counterpart to dc's standalone stage reporter. Only heartbeat work
+# runs in the background, preserving foreground prompts, output, and signals.
+# Static labels avoid exposing credentials or command arguments.
+STAGE_ACTIVE=0
+STAGE_LABEL=""
+STAGE_STARTED=0
+STAGE_HEARTBEAT_PID=""
+STAGE_WARNINGS=0
+
+stage_elapsed() {
+  local now
+  now="$(date +%s)"
+  printf '%s' "$((now - STAGE_STARTED))"
+}
+
+stage_stop_heartbeat() {
+  [ -n "$STAGE_HEARTBEAT_PID" ] || return 0
+  kill "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$STAGE_HEARTBEAT_PID" 2>/dev/null || true
+  STAGE_HEARTBEAT_PID=""
+}
+
+stage_begin() {
+  STAGE_LABEL="$1"
+  STAGE_STARTED="$(date +%s)"
+  STAGE_WARNINGS=0
+  STAGE_ACTIVE=1
+  printf '==> %s\n' "$STAGE_LABEL"
+  (
+    heartbeat_sleep_pid=""
+    trap '[ -z "$heartbeat_sleep_pid" ] || kill "$heartbeat_sleep_pid" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "${DC_STAGE_HEARTBEAT_SECONDS:-15}" &
+      heartbeat_sleep_pid=$!
+      wait "$heartbeat_sleep_pid" || exit 0
+      heartbeat_sleep_pid=""
+      printf '    Still working: %s (%ss elapsed)\n' \
+        "$STAGE_LABEL" "$(( $(date +%s) - STAGE_STARTED ))" >&2
+    done
+  ) &
+  STAGE_HEARTBEAT_PID=$!
+}
+
+stage_end() {
+  local elapsed outcome="completed"
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  [ "$STAGE_WARNINGS" -eq 0 ] || outcome="completed with warnings"
+  STAGE_ACTIVE=0
+  printf '==> %s %s in %ss\n' "$STAGE_LABEL" "$outcome" "$elapsed"
+}
+
+stage_fail() {
+  local status="$1" elapsed
+  elapsed="$(stage_elapsed)"
+  stage_stop_heartbeat
+  STAGE_ACTIVE=0
+  printf 'ERROR: %s failed after %ss (exit %s).\n' \
+    "$STAGE_LABEL" "$elapsed" "$status" >&2
+}
+
+stage_on_exit() {
+  local status="$1"
+  if [ "$STAGE_ACTIVE" -eq 1 ]; then
+    stage_fail "$status"
+  fi
+}
+# Bash's EXIT trap can see the previous command's zero status when the
+# reporting shell receives a signal. Map signals before reporting cleanup.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'stage_on_exit "$?"' EXIT
+
 # Readiness marker (issue-orchestrator readiness contract, issue #31 / PR #46):
-# remove any stale marker before setup begins; it is re-created only as this
-# script's final successful action (end of file). Sourced, not executed.
+# remove any stale marker before setup begins; it is re-created only after all
+# required setup work succeeds, immediately before setup completion is reported.
+# Sourced, not executed.
 # shellcheck source=lib/setup-marker.sh
 source "$_SETUP_DIR/lib/setup-marker.sh"
 setup_marker_reset
+# Any handoff from an interrupted or manually repeated setup is stale until
+# this run proves runtime skills materialized successfully.
+rmdir "$SKILL_REFRESH_HANDOFF_PATH" 2>/dev/null || true
 
 # Caveman policy check (issue #65) — advisory, runs unconditionally, silent
 # when Caveman is already active. Sourced, not executed.
@@ -113,6 +191,8 @@ fi
 
 echo "==> Shared skills location"
 mkdir -p "$WORKSPACE/.agents/skills"
+
+stage_begin "Configuring credentials"
 
 # --- GitHub App identity (scoped, admin-free push/PR auth) --------------------
 # The container authenticates to GitHub as the configured App via short-lived
@@ -394,7 +474,19 @@ fi
 # reuse the same unlock — locking earlier would invalidate the session.
 bw_relock_if_ours
 
+stage_end
+
+stage_begin "Updating agent packages"
 echo "==> Updating agent CLIs to latest (non-fatal — offline/rate-limit safe)"
+# Network work in this section is unattended. Bound each missing network
+# boundary without touching interactive Bitwarden or device-login flows.
+# Tests may lower the default; production keeps enough time for cold npm data.
+STARTUP_NETWORK_TIMEOUT_SECS="${STARTUP_NETWORK_TIMEOUT_SECS:-120}"
+STARTUP_NETWORK_KILL_AFTER_SECS="${STARTUP_NETWORK_KILL_AFTER_SECS:-5}"
+run_unattended_network() {
+  timeout --kill-after="$STARTUP_NETWORK_KILL_AFTER_SECS" "$STARTUP_NETWORK_TIMEOUT_SECS" "$@"
+}
+
 # No sudo: --security-opt no-new-privileges disables it at runtime, and the
 # Dockerfile-baked /usr/bin/{claude,codex} live in root-owned /usr, which npm
 # can't rewrite even if the files themselves were chowned (rename needs write
@@ -410,48 +502,137 @@ if ! grep -q "# --- agent-devcontainer npm-global PATH ---" "$BASHRC"; then
 export PATH="$HOME/.npm-global/bin:$PATH"
 EOF
 fi
-if npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest \
-    >/tmp/agent-cli-update.log 2>&1; then
-  echo "    claude: $(claude --version 2>/dev/null || echo unknown)"
-  echo "    codex:  $(codex --version 2>/dev/null || echo unknown)"
-else
-  echo "WARNING: agent CLI update failed — keeping baked-in versions."
-  echo "         See /tmp/agent-cli-update.log for details."
-fi
 
-# issue-orchestrator installs straight from npmjs, where it is published
-# publicly (Sadotu/issue-orchestrator#81). No registry configuration, no
-# .npmrc, no token, and no GitHub App permission is involved — which is the
-# whole reason it moved off GitHub Packages; see CLAUDE.md for that history.
-# Kept as its own non-fatal call rather than folded into the claude/codex
-# install above: `npm install -g a b c` resolves every argument before
-# installing any of them, so one unreachable package aborts the whole command
-# atomically and would silently stop claude/codex updating too.
-if npm install -g @nickysagan/issue-orchestrator@latest \
-    >/tmp/issue-orchestrator-update.log 2>&1; then
-  # Never probe with `issue-orchestrator --version`: the binary takes no flags,
-  # so any invocation starts the supervisor and its workers. Read npm's record.
-  echo "    issue-orchestrator: $(npm list -g @nickysagan/issue-orchestrator --depth=0 2>/dev/null | sed -n 's/.*issue-orchestrator@//p' || echo unknown)"
-else
-  echo "WARNING: issue-orchestrator update failed — keeping baked-in vendored version."
-  echo "         See /tmp/issue-orchestrator-update.log for details."
-fi
+# npm may have removed part of an existing global package before a download
+# stalls. Update a copied sibling prefix, then swap only after npm succeeds so
+# a timeout, failure, or TERM leaves the prior user installation runnable.
+install_staged_npm_update() (
+  log="$1"
+  shift
+  prefix="$HOME/.npm-global"
+  staged="$prefix.staged"
+  backup="$prefix.backup"
 
-# worktree-warden: same npmjs-only, no-credential-needed rationale and same
-# atomic-failure-isolation reason for its own `npm install -g` call as
-# issue-orchestrator above.
-if npm install -g @nickysagan/worktree-warden@latest \
-    >/tmp/worktree-warden-update.log 2>&1; then
-  # Never probe with a bare `worktree-warden` (starts the watcher daemon) or
-  # any flag (every non-`status` argument is rejected as "unknown command"
-  # only after the daemon path is already skipped — still not a version
-  # probe). Read npm's record instead.
-  echo "    worktree-warden: $(npm list -g @nickysagan/worktree-warden --depth=0 2>/dev/null | sed -n 's/.*worktree-warden@//p' || echo unknown)"
-else
-  echo "WARNING: worktree-warden update failed — keeping baked-in vendored version."
-  echo "         See /tmp/worktree-warden-update.log for details."
-fi
+  cleanup_staged_npm_update() {
+    status=$?
+    rm -rf "$staged"
+    if [ -e "$backup" ] && [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" 2>/dev/null || true
+    fi
+    exit "$status"
+  }
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap cleanup_staged_npm_update EXIT
 
+  # Recover the only interruption window in the preceding activation. A baked
+  # CLI remains on PATH even if an untrappable stop occurred in that window.
+  if [ -e "$backup" ]; then
+    if [ ! -e "$prefix" ]; then
+      mv "$backup" "$prefix" || return 1
+    else
+      rm -rf "$backup"
+    fi
+  fi
+  rm -rf "$staged"
+  mkdir -p "$staged"
+  if [ -d "$prefix" ]; then
+    cp -a "$prefix/." "$staged/" || return 1
+  fi
+
+  run_unattended_network npm install -g --prefix "$staged" "$@" >"$log" 2>&1 || return $?
+  if [ -e "$prefix" ]; then
+    mv "$prefix" "$backup" || return 1
+  fi
+  if mv "$staged" "$prefix"; then
+    rm -rf "$backup"
+  else
+    [ -e "$prefix" ] || mv "$backup" "$prefix" 2>/dev/null || true
+    return 1
+  fi
+)
+
+# Read package metadata from both prefixes. The user prefix shadows /usr, so
+# its package is the effective version when present; otherwise the image-baked
+# package remains the usable fallback. Never execute a package entrypoint to
+# discover its version: issue-orchestrator and worktree-warden can start daemon
+# work when invoked.
+npm_prefix_package_version() {
+  local prefix="$1" package="$2" listing
+  listing="$(npm list --global --prefix "$prefix" "$package" --depth=0 --json 2>/dev/null || true)"
+  jq -r --arg package "$package" \
+    '.dependencies[$package].version // empty' <<<"$listing" 2>/dev/null || true
+}
+
+effective_npm_package_version() {
+  local package="$1" version
+  version="$(npm_prefix_package_version "$HOME/.npm-global" "$package")"
+  if [ -n "$version" ]; then
+    printf '%s\n' "$version"
+  else
+    npm_prefix_package_version /usr "$package"
+  fi
+}
+
+report_npm_fallback() {
+  STAGE_WARNINGS=1
+  local label="$1" failure="$2" version="$3" log="$4" status="${5:-1}"
+  if [ "$status" -eq 124 ]; then
+    failure="${failure% failed} timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s"
+  elif [ "$status" -eq 137 ]; then
+    failure="${failure% failed} was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline"
+  fi
+  if [ -n "$version" ]; then
+    echo "WARNING: $label $failure — keeping effective version $version."
+  else
+    echo "WARNING: $label $failure — no installed version is available."
+  fi
+  echo "         See $log for details."
+}
+
+update_npm_package() {
+  local package="$1" label="$2" log="$3" effective latest installed status
+  effective="$(effective_npm_package_version "$package")"
+  : >"$log"
+  if latest="$(run_unattended_network npm view "$package" version 2>"$log")" && [ -n "$latest" ]; then
+    :
+  else
+    status=$?
+    report_npm_fallback "$label" "version check failed" "$effective" "$log" "$status"
+    return
+  fi
+  latest="${latest%%$'\n'*}"
+  latest="${latest%$'\r'}"
+
+  if [ "$effective" = "$latest" ]; then
+    echo "    $label: $effective (current)"
+    return
+  fi
+
+  if install_staged_npm_update "$log" "$package@$latest"; then
+    installed="$(effective_npm_package_version "$package")"
+    echo "    $label: ${installed:-$latest} (updated)"
+  else
+    status=$?
+    effective="$(effective_npm_package_version "$package")"
+    report_npm_fallback "$label" "update failed" "$effective" "$log" "$status"
+  fi
+}
+
+# Keep each package independent: one registry or install failure must not stop
+# freshness checks and useful updates for the remaining CLIs. Public npmjs
+# packages need no registry token, GitHub credential, or daemon invocation.
+update_npm_package @anthropic-ai/claude-code claude /tmp/claude-update.log
+update_npm_package @openai/codex codex /tmp/codex-update.log
+update_npm_package @nickysagan/issue-orchestrator issue-orchestrator \
+  /tmp/issue-orchestrator-update.log
+update_npm_package @nickysagan/worktree-warden worktree-warden \
+  /tmp/worktree-warden-update.log
+
+
+stage_end
+
+stage_begin "Updating skills and plugins"
 echo "==> Claude Code plugins/skills"
 # `marketplace add` / `plugin install` are safe to re-run, but they only ever
 # create: an already-added marketplace or already-installed plugin just no-ops,
@@ -459,12 +640,12 @@ echo "==> Claude Code plugins/skills"
 # update` are the verbs that advance an existing install, and both exit 0 with
 # "already at the latest version" when there is nothing to do. `add` has to
 # stay and run first — `marketplace update` on a never-added name fails.
-claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin marketplace update superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || true
-claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || true
-claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || true
+claude plugin marketplace add obra/superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin marketplace update superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin install superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin update superpowers@superpowers-marketplace 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin marketplace add JuliusBrussee/caveman 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+claude plugin install caveman@caveman 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
 # `plugin list` is an explicit read-only subcommand — never probe a version by
 # invoking the plugin itself (see the issue-orchestrator note above).
 sp_claude_version="$(claude plugin list --json 2>/dev/null \
@@ -481,9 +662,17 @@ echo "    superpowers (Claude): ${sp_claude_version:-unknown}"
 # rot after it moved to the github-pr-cleanup skill upstream. It's a separate
 # script (not inlined here) so start-worktree-warden.sh's postStart can call
 # the exact same logic on every container start, not just create (#92).
-WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
-  GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
-  "$TOOLDIR/refresh-skills.sh"
+# Propagate refresh warnings to this setup stage through an invocation-scoped
+# exit status. The refresh remains nonfatal and keeps streaming its output.
+if REFRESH_SKILLS_REPORT_WARNINGS=1 \
+    WORKSPACE="$WORKSPACE" TOOLDIR="$TOOLDIR" PROJECT_NAME="$PROJECT_NAME" \
+    GH_OWNER="${GH_OWNER:-}" GITHUB_APP_DIR="$GITHUB_APP_DIR" \
+    REFRESH_SKILLS_HANDOFF="$SKILL_REFRESH_HANDOFF_PATH" \
+    "$TOOLDIR/refresh-skills.sh"; then
+  :
+else
+  STAGE_WARNINGS=1
+fi
 
 echo "==> Codex plugins/skills"
 # Codex reserves the marketplace name "openai-curated" (what openai/plugins'
@@ -492,22 +681,67 @@ echo "==> Codex plugins/skills"
 # name. Manifest path/shape: <root>/.agents/plugins/marketplace.json, plugin
 # content under <root>/plugins/<name>/.
 #
-# Re-download on every run rather than only when the directory is missing:
-# `codex plugin marketplace upgrade` refreshes *Git* marketplace snapshots
-# only, and this one is local by necessity, so nothing else would ever advance
-# it — and ~/.codex persists across rebuilds, which is how Codex stayed pinned
-# to whatever version landed first. Stage the new tree beside the live one and
-# swap, so a failed download leaves the working copy untouched and content
-# deleted upstream does not linger in a "refreshed" install.
+# Keep a shallow bare source cache under the persisted ~/.codex volume. Each
+# setup still fetches the remote head, but an unchanged plugin tree reuses local
+# data instead of cloning and materializing the whole plugin again. Changed
+# content is staged from a complete Git tree and swapped wholesale, so files
+# removed upstream do not linger. Any fetch/materialization failure leaves the
+# usable live marketplace untouched and the next setup retries.
 CODEX_SP_DIR="$HOME/.codex/marketplaces/superpowers-curated"
-tmp_clone="$(mktemp -d)"
-if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
-    >/tmp/codex-superpowers-clone.log 2>&1; then
+CODEX_SP_CACHE="$HOME/.codex/cache/openai-plugins.git"
+codex_sp_cache_staged="$CODEX_SP_CACHE.staged"
+codex_sp_source_commit=""
+codex_sp_network_status=0
+codex_sp_source_tree=""
+mkdir -p "$(dirname "$CODEX_SP_CACHE")"
+
+if git -C "$CODEX_SP_CACHE" rev-parse --git-dir >/dev/null 2>&1; then
+  if run_unattended_network git -C "$CODEX_SP_CACHE" fetch --depth 1 origin HEAD \
+      >/tmp/codex-superpowers-refresh.log 2>&1; then
+    codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse FETCH_HEAD 2>/dev/null || true)"
+  else
+    codex_sp_network_status=$?
+  fi
+else
+  rm -rf "$codex_sp_cache_staged"
+  if run_unattended_network git clone --bare --depth 1 https://github.com/openai/plugins "$codex_sp_cache_staged" \
+      >/tmp/codex-superpowers-refresh.log 2>&1; then
+    rm -rf "$CODEX_SP_CACHE"
+    if mv "$codex_sp_cache_staged" "$CODEX_SP_CACHE"; then
+      codex_sp_source_commit="$(git -C "$CODEX_SP_CACHE" rev-parse HEAD 2>/dev/null || true)"
+    fi
+  else
+    codex_sp_network_status=$?
+  fi
+  rm -rf "$codex_sp_cache_staged"
+fi
+
+if [ -n "$codex_sp_source_commit" ]; then
+  codex_sp_source_tree="$(git -C "$CODEX_SP_CACHE" \
+    rev-parse "$codex_sp_source_commit:plugins/superpowers" 2>/dev/null || true)"
+fi
+
+if [ -z "$codex_sp_source_tree" ]; then
+  STAGE_WARNINGS=1
+  if [ "$codex_sp_network_status" -eq 124 ]; then
+    echo "WARNING: refreshing openai/plugins for Codex superpowers timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s."
+  elif [ "$codex_sp_network_status" -eq 137 ]; then
+    echo "WARNING: refreshing openai/plugins was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline."
+  else
+    echo "WARNING: failed to refresh openai/plugins for Codex superpowers."
+  fi
+  echo "         See /tmp/codex-superpowers-refresh.log for details."
+  echo "         Keeping the Codex superpowers copy already on disk, if any."
+elif [ ! -d "$CODEX_SP_DIR/plugins/superpowers" ] || \
+     [ ! -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ] || \
+     [ ! -f "$CODEX_SP_DIR/.source-tree" ] || \
+     [ "$(cat "$CODEX_SP_DIR/.source-tree")" != "$codex_sp_source_tree" ]; then
   codex_sp_staged="$CODEX_SP_DIR.staged"
   rm -rf "$codex_sp_staged"
-  mkdir -p "$codex_sp_staged/plugins/superpowers" "$codex_sp_staged/.agents/plugins"
-  cp -r "$tmp_clone/plugins/superpowers/." "$codex_sp_staged/plugins/superpowers/"
-  cat > "$codex_sp_staged/.agents/plugins/marketplace.json" <<'JSON'
+  mkdir -p "$codex_sp_staged" "$codex_sp_staged/.agents/plugins"
+  if git -C "$CODEX_SP_CACHE" archive "$codex_sp_source_commit" plugins/superpowers \
+      | tar -x -C "$codex_sp_staged"; then
+    cat > "$codex_sp_staged/.agents/plugins/marketplace.json" <<'JSON'
 {
   "name": "superpowers-curated",
   "interface": { "displayName": "Superpowers (official plugin, local marketplace)" },
@@ -521,30 +755,52 @@ if git clone --depth 1 https://github.com/openai/plugins "$tmp_clone" \
   ]
 }
 JSON
-  rm -rf "$CODEX_SP_DIR"
-  mv "$codex_sp_staged" "$CODEX_SP_DIR"
-else
-  echo "WARNING: failed to clone openai/plugins for Codex superpowers."
-  echo "         See /tmp/codex-superpowers-clone.log for details."
-  echo "         Keeping the Codex superpowers copy already on disk, if any."
+    printf '%s\n' "$codex_sp_source_commit" > "$codex_sp_staged/.source-commit"
+    printf '%s\n' "$codex_sp_source_tree" > "$codex_sp_staged/.source-tree"
+    codex_sp_backup="$CODEX_SP_DIR.backup"
+    rm -rf "$codex_sp_backup"
+    if [ ! -e "$CODEX_SP_DIR" ]; then
+      mv "$codex_sp_staged" "$CODEX_SP_DIR" || {
+        STAGE_WARNINGS=1
+        echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
+      }
+    elif mv "$CODEX_SP_DIR" "$codex_sp_backup"; then
+      if mv "$codex_sp_staged" "$CODEX_SP_DIR"; then
+        rm -rf "$codex_sp_backup"
+      else
+        mv "$codex_sp_backup" "$CODEX_SP_DIR" || true
+        STAGE_WARNINGS=1
+        echo "WARNING: failed to activate refreshed Codex superpowers marketplace."
+      fi
+    else
+      STAGE_WARNINGS=1
+      echo "WARNING: failed to preserve the existing Codex superpowers marketplace."
+    fi
+  else
+    STAGE_WARNINGS=1
+    echo "WARNING: failed to materialize Codex superpowers from the refreshed source."
+    echo "         Keeping the Codex superpowers copy already on disk, if any."
+  fi
+  rm -rf "$codex_sp_staged"
+
 fi
-rm -rf "$tmp_clone"
 if [ -f "$CODEX_SP_DIR/.agents/plugins/marketplace.json" ]; then
   # Re-running both is what advances the installed copy: `marketplace add`
   # re-reads the refreshed root, `plugin add` reinstalls the plugin from it.
-  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || true
-  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || true
+  codex plugin marketplace add "$CODEX_SP_DIR" 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
+  codex plugin add superpowers@superpowers-curated 2>&1 | sed 's/^/    /' || STAGE_WARNINGS=1
 fi
 codex_sp_version="$(codex plugin list --json 2>/dev/null \
   | jq -r '.installed[] | select(.pluginId == "superpowers@superpowers-curated") | .version' 2>/dev/null || true)"
 echo "    superpowers (Codex): ${codex_sp_version:-unknown}"
+
+stage_end
 
 # Caveman for Codex: no plugin install needed — the skill files live in the
 # workspace's own .agents/skills/caveman* (Codex reads .agents/skills/
 # natively). Only warns when Caveman is not active — no opt-in required.
 caveman_policy_check "$WORKSPACE"
 
-echo "==> Done."
 echo ""
 echo "=== Manual checklist (not scriptable) ==="
 echo "1. Claude Code auth: browser '/login' does NOT work in this container."
@@ -583,3 +839,4 @@ echo "   / AGENTS.md). 'gh'/'git push' work automatically once step 2 is done."
 # set -e / bw_fail before here), so the marker's existence == setup complete.
 echo "==> Publishing readiness marker: $(setup_marker_path)"
 setup_marker_complete
+echo "==> Setup complete."

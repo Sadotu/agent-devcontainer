@@ -10,7 +10,8 @@
     "source=agent-devcontainer-dev-codex-config,target=/home/vscode/.codex,type=volume",
     "source=agent-devcontainer-dev-gh-config,target=/home/vscode/.config/gh,type=volume",
     "source=agent-devcontainer-dev-github-app-config,target=/home/vscode/.config/github-app,type=volume",
-    "source=agent-devcontainer-dev-shell-history,target=/home/vscode/.history,type=volume"
+    "source=agent-devcontainer-dev-shell-history,target=/home/vscode/.history,type=volume",
+    "source=agent-devcontainer-dev-npm-cache,target=/home/vscode/.npm,type=volume"
   ],
   "remoteUser": "vscode",
   "runArgs": [

@@ -56,14 +56,43 @@ export FAKE_HEALTH_CMD="node -e 'fetch(\"http://127.0.0.1:4317/health\").then(re
 
 cat >"$TMP/bin/devcontainer" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+case "${FAKE_DEVCONTAINER_SCENARIO:-success}" in
+  slow)
+    printf 'slow lifecycle output\n'
+    sleep 0.15
+    ;;
+  fail)
+    printf 'bounded lifecycle diagnostic\n' >&2
+    exit 23
+    ;;
+  signal)
+    printf 'signal lifecycle diagnostic\n' >&2
+    kill -TERM "$$"
+    ;;
+  signal_parent)
+    printf 'parent signal diagnostic\n' >&2
+    kill -TERM "$PPID"
+    ;;
+  prompt)
+    printf 'credential response: '
+    read -r response
+    printf '%s\n' "$response"
+    ;;
+esac
 EOF
 
 cat >"$TMP/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
 case "${1:-}" in
-  ps|pull|network) exit 0 ;;
+  ps|network) exit 0 ;;
+  pull)
+    [ -z "${FAKE_DOCKER_PULL_FAIL:-}" ] || {
+      printf 'bounded image pull diagnostic\n' >&2
+      exit 42
+    }
+    exit 0
+    ;;
   run)
     if [ "${2:-}" = "--rm" ]; then
       cat "$FAKE_CANONICAL"   # empty file => image has no baked template
@@ -112,11 +141,87 @@ export PATH="$TMP/bin:$PATH"
 
 run_dc() { # <subcommand...> -> sets RC, OUT, ERR
   set +e
-  "$PROJ_DC" "$@" >"$TMP/out" 2>"$TMP/err"
+  if [ -n "${FAKE_DC_INPUT+x}" ]; then
+    printf '%s\n' "$FAKE_DC_INPUT" | "$PROJ_DC" "$@" >"$TMP/out" 2>"$TMP/err"
+  else
+    "$PROJ_DC" "$@" >"$TMP/out" 2>"$TMP/err"
+  fi
   RC=$?
   set -e
   OUT="$(cat "$TMP/out")"; ERR="$(cat "$TMP/err")"
 }
+
+# --- up: visible stages, heartbeat, failure status, and final readiness -----
+reset_proj image-based
+run_dc up
+[ "$RC" -eq 0 ] || fail "staged up exited $RC: $ERR"
+COMBINED="$(printf '%s\n%s\n' "$OUT" "$ERR")"
+prepare_line="$(grep -n -m1 'Preparing services and images' <<<"$COMBINED" | cut -d: -f1 || true)"
+build_line="$(grep -n -m1 'Building and recreating devcontainer' <<<"$COMBINED" | cut -d: -f1 || true)"
+ready_line="$(grep -n -m1 'Ready: devcontainer startup complete' <<<"$COMBINED" | cut -d: -f1 || true)"
+[ -n "$prepare_line" ] || fail "up omitted service/image preparation stage: $COMBINED"
+[ -n "$build_line" ] || fail "up omitted build/recreation stage: $COMBINED"
+[ -n "$ready_line" ] || fail "up omitted final readiness: $COMBINED"
+[ "$prepare_line" -lt "$build_line" ] && [ "$build_line" -lt "$ready_line" ] \
+  || fail "up stage/readiness order wrong: $COMBINED"
+
+export FAKE_DEVCONTAINER_SCENARIO=slow
+export DC_STAGE_HEARTBEAT_SECONDS=0.05
+run_dc up
+[ "$RC" -eq 0 ] || fail "slow staged up exited $RC: $ERR"
+COMBINED="$(printf '%s\n%s\n' "$OUT" "$ERR")"
+grep -Fq 'slow lifecycle output' <<<"$COMBINED" || fail "slow child output was hidden: $COMBINED"
+grep -Eq 'Still working: Building and recreating devcontainer \([0-9]+s elapsed\)' <<<"$COMBINED" \
+  || fail "slow stage emitted no heartbeat: $COMBINED"
+
+export FAKE_DEVCONTAINER_SCENARIO=fail
+unset DC_STAGE_HEARTBEAT_SECONDS
+run_dc up
+[ "$RC" -eq 23 ] || fail "required lifecycle failure returned $RC instead of 23: $ERR"
+COMBINED="$(printf '%s\n%s\n' "$OUT" "$ERR")"
+grep -Fq 'bounded lifecycle diagnostic' <<<"$COMBINED" || fail "child diagnostic was hidden: $COMBINED"
+grep -Eq 'Building and recreating devcontainer failed after [0-9]+s \(exit 23\)' <<<"$COMBINED" \
+  || fail "required failure omitted stage, elapsed time, or status: $COMBINED"
+! grep -Fq 'Ready: devcontainer startup complete' <<<"$COMBINED" \
+  || fail "failed lifecycle reported final readiness: $COMBINED"
+unset FAKE_DEVCONTAINER_SCENARIO
+
+export FAKE_DEVCONTAINER_SCENARIO=signal
+run_dc up
+[ "$RC" -eq 143 ] || fail "signaled lifecycle returned $RC instead of 143: $ERR"
+grep -Fq 'signal lifecycle diagnostic' "$TMP/err" || fail "signaled child diagnostic was hidden: $ERR"
+! grep -Fq 'Ready: devcontainer startup complete' "$TMP/err" \
+  || fail "signaled lifecycle reported final readiness: $ERR"
+
+# Terminating dc itself must report the signal status, even when its
+# foreground command succeeds after delivering that signal.
+export FAKE_DEVCONTAINER_SCENARIO=signal_parent
+run_dc up
+[ "$RC" -eq 143 ] || fail "signaled dc returned $RC instead of 143: $ERR"
+grep -Eq 'Building and recreating devcontainer failed after [0-9]+s \(exit 143\)' "$TMP/err" \
+  || fail "dc signal diagnostic reported the previous command status: $ERR"
+! grep -Fq 'Ready: devcontainer startup complete' "$TMP/err" \
+  || fail "signaled dc reported final readiness: $ERR"
+
+export FAKE_DEVCONTAINER_SCENARIO=prompt
+export FAKE_DC_INPUT='approved'
+run_dc up
+[ "$RC" -eq 0 ] || fail "interactive lifecycle exited $RC: $ERR"
+grep -Fq 'credential response: approved' "$TMP/out" \
+  || fail "stage wrapper did not preserve child stdin/stdout: $OUT"
+unset FAKE_DEVCONTAINER_SCENARIO FAKE_DC_INPUT
+
+export FAKE_DOCKER_PULL_FAIL=1
+run_dc up
+[ "$RC" -eq 0 ] || fail "optional pull failure blocked startup (exit $RC): $ERR"
+COMBINED="$(printf '%s\n%s\n' "$OUT" "$ERR")"
+grep -Fq 'bounded image pull diagnostic' <<<"$COMBINED" \
+  || fail "optional pull diagnostic was hidden: $COMBINED"
+grep -Fq 'WARNING: pull failed' <<<"$COMBINED" \
+  || fail "optional pull outcome was not reported: $COMBINED"
+grep -Fq 'Ready: devcontainer startup complete' <<<"$COMBINED" \
+  || fail "optional pull failure suppressed final readiness: $COMBINED"
+unset FAKE_DOCKER_PULL_FAIL
 
 # --- self-update: already in sync -------------------------------------------
 reset_proj image-based

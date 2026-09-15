@@ -20,6 +20,7 @@ STUB_DIR="$TMP/stubs"
 mkdir -p "$STUB_DIR"
 
 TMUX_LOG="$TMP/tmux.log"
+EVENT_LOG="$TMP/events.log"
 SESSION_FLAG="$TMP/session-exists"
 NEWSESSION_FAIL_FLAG="$TMP/newsession-should-fail"
 NEWSESSION_CRASH_FLAG="$TMP/newsession-should-crash"
@@ -43,6 +44,7 @@ if [[ "${1:-}" == has-session ]]; then
   fi
 fi
 if [[ "${1:-}" == new-session ]]; then
+  printf 'warden-start\n' >> "$LIFECYCLE_EVENT_LOG"
   if [[ -f "$TMUX_NEWSESSION_FAIL_FLAG" ]]; then
     echo "tmux: stub-simulated failure" >&2
     exit 17
@@ -65,11 +67,12 @@ chmod +x "$STUB_DIR/worktree-warden"
 
 # refresh-skills.sh's own behavior (issue #92) is covered end-to-end by
 # refresh-skills.test.sh — here a stub just proves start-worktree-warden.sh
-# calls it, via TOOLDIR, after the warden autostart above.
+# calls it via TOOLDIR and finishes before the warden autostart.
 REFRESH_LOG="$TMP/refresh.log"
 cat > "$STUB_DIR/refresh-skills.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "called" >> "$REFRESH_LOG"
+printf 'refresh\n' >> "$LIFECYCLE_EVENT_LOG"
 exit 0
 EOF
 chmod +x "$STUB_DIR/refresh-skills.sh"
@@ -108,6 +111,8 @@ run_script() {
     TMUX_NEWSESSION_CRASH_FLAG="$NEWSESSION_CRASH_FLAG" \
     AGENT_SETUP_MARKER="$marker" HOME="$home_dir" WORKSPACE="$WORKSPACE_DIR" \
     TOOLDIR="$STUB_DIR" REFRESH_LOG="$REFRESH_LOG" \
+    SKILL_REFRESH_HANDOFF_PATH="$TMP/postcreate-skill-refresh" \
+    LIFECYCLE_EVENT_LOG="$EVENT_LOG" \
     PATH="$path_value" \
     bash "$SCRIPT" > "$TMP/out.log" 2>&1
   STATUS=$?
@@ -165,7 +170,7 @@ run_script "$CASE3_MARKER" "$CASE3_HOME" "$PATH"
 # Case 4: everything present, no existing tmux session -> exactly one
 # new-session call, including -s worktree-warden and -c "$WORKSPACE".
 # =========================================================================
-rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG"
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG" "$EVENT_LOG"
 CASE4_MARKER="$TMP/case4/marker"
 mkdir -p "$(dirname "$CASE4_MARKER")"
 printf 'agent-setup-complete\n' > "$CASE4_MARKER"
@@ -189,9 +194,13 @@ grep -Fq -- 'worktree-warden/warden.log' <<<"$new_session_line" || fail "case 4:
 # post-launch crash-recheck branch (the stub's new-session touches
 # SESSION_FLAG on a normal success, which the recheck must see).
 grep -Fq -- "started in tmux session" "$TMP/out.log" || fail "case 4: expected a success message, got: $(cat "$TMP/out.log")"
-# refresh-skills.sh (issue #92) must run exactly once after the warden
-# autostart above (it's called as the script's last step, source-order).
+# refresh-skills.sh (issue #92) must run exactly once before the warden
+# autostart so workers cannot observe a partial skill refresh.
 [[ "$(refresh_call_count)" -eq 1 ]] || fail "case 4: expected refresh-skills.sh to be called exactly once, got $(refresh_call_count)"
+[[ "$(sed -n '1p' "$EVENT_LOG")" = refresh ]] || \
+  fail "case 4: refresh did not finish before warden start: $(cat "$EVENT_LOG")"
+[[ "$(sed -n '2p' "$EVENT_LOG")" = warden-start ]] || \
+  fail "case 4: warden start missing after refresh: $(cat "$EVENT_LOG")"
 
 # =========================================================================
 # Case 5: same as case 4 but a session already exists -> zero new-session
@@ -293,5 +302,31 @@ out="$(cat "$TMP/out.log")"
 [[ "$out" != *"failed to start tmux session"* ]] || fail "case 8: wrong branch -- this is new-session succeeding then the pane dying, not new-session itself failing: $out"
 [[ "$(refresh_call_count)" -eq 1 ]] || fail "case 8: expected refresh-skills.sh to still be called despite the pane crashing, got $(refresh_call_count)"
 rm -f "$NEWSESSION_CRASH_FLAG"
+
+# =========================================================================
+# Case 9 (#130): setup publishes a one-shot handoff only after its skill
+# refresh succeeds. First postStart consumes it without duplicate work; each
+# of the next two starts performs one fresh check. This proves the handoff
+# cannot freeze refresh for the container lifetime.
+# =========================================================================
+rm -f "$TMUX_LOG" "$SESSION_FLAG" "$REFRESH_LOG" "$EVENT_LOG"
+CASE9_MARKER="$TMP/case9/marker"
+mkdir -p "$(dirname "$CASE9_MARKER")" "$TMP/postcreate-skill-refresh"
+printf 'agent-setup-complete\n' > "$CASE9_MARKER"
+CASE9_HOME="$TMP/case9-home"
+setup_creds "$CASE9_HOME"
+run_script "$CASE9_MARKER" "$CASE9_HOME" "$STUB_PATH"
+[[ $STATUS -eq 0 ]] || fail "case 9: first postStart exited $STATUS: $(cat "$TMP/out.log")"
+[[ "$(refresh_call_count)" -eq 0 ]] || fail "case 9: first postStart duplicated setup refresh"
+[[ ! -e "$TMP/postcreate-skill-refresh" ]] || fail "case 9: first postStart did not consume handoff"
+grep -Fq 'skills already refreshed during setup' "$TMP/out.log" || \
+  fail "case 9: first postStart did not report handoff: $(cat "$TMP/out.log")"
+
+run_script "$CASE9_MARKER" "$CASE9_HOME" "$STUB_PATH"
+[[ $STATUS -eq 0 ]] || fail "case 9: second postStart exited $STATUS: $(cat "$TMP/out.log")"
+[[ "$(refresh_call_count)" -eq 1 ]] || fail "case 9: second postStart did not refresh exactly once"
+run_script "$CASE9_MARKER" "$CASE9_HOME" "$STUB_PATH"
+[[ $STATUS -eq 0 ]] || fail "case 9: third postStart exited $STATUS: $(cat "$TMP/out.log")"
+[[ "$(refresh_call_count)" -eq 2 ]] || fail "case 9: third postStart did not refresh exactly once"
 
 echo "PASS: start-worktree-warden.test.sh"

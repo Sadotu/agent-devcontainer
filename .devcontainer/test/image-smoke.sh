@@ -24,12 +24,125 @@ assert_invalid_usage() {
     }
 }
 
+npm_update_source_test() (
+    local setup=$1 temp out status package key
+    local -a packages
+    temp="$(mktemp -d)"
+    mkdir -p "$temp/bin" "$temp/home" "$temp/state"/{baked,user,registry,view-fail,install-fail}
+
+    cat >"$temp/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPM_CALLS"
+key="${2//\//_}"
+case "${1:-}" in
+  config) exit 0 ;;
+  view)
+    if [ "${NPM_VIEW_HANGS:-}" = "$key" ]; then
+      sleep 30 </dev/null >/dev/null 2>&1 &
+      printf '%s\n' "$!" > "$NPM_VIEW_CHILD"
+      sleep 3
+    fi
+    [ ! -e "$NPM_STATE/view-fail/$key" ] || exit 28
+    cat "$NPM_STATE/registry/$key"
+    ;;
+  list)
+    package="${5:-}"
+    key="${package//\//_}"
+    [ "${4:-}" = "$HOME/.npm-global" ] && store=user || store=baked
+    if [ -r "$NPM_STATE/$store/$key" ]; then
+      version="$(cat "$NPM_STATE/$store/$key")"
+      printf '{"dependencies":{"%s":{"version":"%s"}}}\n' "$package" "$version"
+    else
+      printf '{"dependencies":{}}\n'
+      exit 1
+    fi
+    ;;
+  install)
+    spec="${@: -1}"; version="${spec##*@}"; package="${spec%@*}"; key="${package//\//_}"
+    [ ! -e "$NPM_STATE/install-fail/$key" ] || exit 17
+    printf '%s\n' "$version" >"$NPM_STATE/user/$key"
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+    for package in issue-orchestrator worktree-warden; do
+        cat >"$temp/bin/$package" <<'EOF'
+#!/usr/bin/env bash
+echo invoked >>"$DAEMON_CALLS"
+exit 99
+EOF
+    done
+    chmod +x "$temp/bin/npm" "$temp/bin/issue-orchestrator" "$temp/bin/worktree-warden"
+
+    export HOME="$temp/home" BASHRC="$temp/bashrc" NPM_STATE="$temp/state"
+    export NPM_CALLS="$temp/npm-calls" DAEMON_CALLS="$temp/daemon-calls"
+    export PATH="$temp/bin:/usr/bin:/bin"
+    packages=(
+        @anthropic-ai/claude-code @openai/codex
+        @nickysagan/issue-orchestrator @nickysagan/worktree-warden
+    )
+    for package in "${packages[@]}"; do
+        key="${package//\//_}"
+        printf '1.0.0\n' >"$NPM_STATE/baked/$key"
+        printf '1.0.0\n' >"$NPM_STATE/registry/$key"
+    done
+
+    # Fresh user prefix: baked packages are effective and current, so setup
+    # checks registry freshness but performs no installs.
+    : >"$NPM_CALLS"
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    [[ $(grep -c '^view ' "$NPM_CALLS") -eq 4 ]]
+    ! grep -q '^install ' "$NPM_CALLS"
+    [[ $out == *'claude: 1.0.0 (current)'* ]]
+
+    # One lookup fails, one package updates, one remains current, and one
+    # install fails. Every package remains isolated and failures report the
+    # version that still wins PATH resolution.
+    printf '1.1.0\n' >"$NPM_STATE/user/@anthropic-ai_claude-code"
+    touch "$NPM_STATE/view-fail/@anthropic-ai_claude-code"
+    printf '2.0.0\n' >"$NPM_STATE/registry/@openai_codex"
+    printf '2.0.0\n' >"$NPM_STATE/registry/@nickysagan_worktree-warden"
+    touch "$NPM_STATE/install-fail/@nickysagan_worktree-warden"
+    : >"$NPM_CALLS"
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    grep -Fq 'claude version check failed — keeping effective version 1.1.0' <<<"$out"
+    grep -Fq 'codex: 2.0.0 (updated)' <<<"$out"
+    grep -Fq 'issue-orchestrator: 1.0.0 (current)' <<<"$out"
+    grep -Fq 'worktree-warden update failed — keeping effective version 1.0.0' <<<"$out"
+    [[ $(grep -c '^install ' "$NPM_CALLS") -eq 2 ]]
+    [[ ! -e "$DAEMON_CALLS" ]]
+
+    # Registry lookup shares the deadline, retains effective installed data,
+    # and stops its child before independent package checks continue.
+    export NPM_VIEW_HANGS=@openai_codex NPM_VIEW_CHILD="$temp/view-child"
+    export STARTUP_NETWORK_TIMEOUT_SECS=1
+    set +e
+    out="$(sed -n '/^echo "==> Updating agent CLIs to latest/,/^echo "==> Claude Code plugins\/skills"/p' "$setup" | sed -e '$d' -e '/^stage_end$/,$d' | source /dev/stdin 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 0 ]]
+    grep -Fq 'codex version check timed out after 1s — keeping effective version 2.0.0' <<<"$out"
+    [[ ! -e "/proc/$(cat "$NPM_VIEW_CHILD")" ]]
+    grep -Fq 'issue-orchestrator: 1.0.0 (current)' <<<"$out"
+    unset NPM_VIEW_HANGS NPM_VIEW_CHILD STARTUP_NETWORK_TIMEOUT_SECS
+    rm -rf "$temp"
+)
+
 source_test() {
     local temp_dir status cleanup test_dir devcontainer_dir artifact package_json archive_listing artifact_sha
     local short_commit full_commit pkg_version expected_sha
     local output invocation curl_calls custom_curl_calls
     test_dir="$(cd "$(dirname "$0")" && pwd)"
     devcontainer_dir="$(dirname "$test_dir")"
+    npm_update_source_test "$devcontainer_dir/setup-agents.sh"
 
     # Derived from the Dockerfile itself (not hardcoded) so bumping the
     # vendored issue-orchestrator package can't leave this test asserting a
@@ -92,12 +205,6 @@ source_test() {
     grep -Fq "COPY vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
     grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" "$devcontainer_dir/Dockerfile"
 
-    # worktree-warden vendor path must be part of the shared npm install -g
-    # block (same cache-clean layer as claude-code/codex/issue-orchestrator).
-    local ww_npm_install_block
-    ww_npm_install_block="$(sed -n '/^RUN npm install -g \\$/,/npm cache clean --force$/p' "$devcontainer_dir/Dockerfile")"
-    grep -Fq "/opt/agent-devcontainer/vendor/worktree-warden-$ww_short_commit.tgz" <<<"$ww_npm_install_block"
-
     # start-worktree-warden.sh / worktree-warden-summary.sh: baked onto the
     # image by another task running in parallel — only their Dockerfile
     # wiring is this task's concern, not their content.
@@ -138,8 +245,10 @@ source_test() {
     grep -Fq 'exec /usr/bin/gh "$@"' "$devcontainer_dir/ghx.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/landed.sh"
     grep -Fq 'GH_TOKEN="$(GITHUB_APP_REPO=$repo /opt/agent-devcontainer/gh-app-token.sh)" /usr/bin/gh "$@"' "$devcontainer_dir/why-failed.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list' "$devcontainer_dir/refresh-skills.sh"
-    grep -Fq 'GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'token="$("$tooldir/gh-app-token.sh")"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'GH_TOKEN="$token" exec /usr/bin/gh "$@"' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr list' "$devcontainer_dir/refresh-skills.sh"
+    grep -Fq 'run_unattended_gh pr create' "$devcontainer_dir/refresh-skills.sh"
     grep -q 'GH_TOKEN=' "$devcontainer_dir/ghx.sh"
     # Never ENABLES xtrace (no `set -x`/`set -ex` in command position — comments
     # and the `set +x` defence below don't count), and DOES disable inherited
@@ -232,13 +341,6 @@ EOF
     grep -Fq '/opt/agent-devcontainer/worktree-warden-summary.sh' "$devcontainer_dir/start-work.sh"
     grep -Fq 'worktree_warden_summary' "$devcontainer_dir/start-work.sh"
 
-    # setup-agents.sh: worktree-warden update block mirrors issue-orchestrator's
-    # (issue #63) — never probes with a bare/`--version` invocation (every
-    # non-`status` argument starts the daemon or is rejected, neither is a
-    # version probe), reads the version from `npm list -g` instead.
-    grep -Fq 'npm install -g @nickysagan/worktree-warden@latest' "$devcontainer_dir/setup-agents.sh"
-    grep -Fq 'npm list -g @nickysagan/worktree-warden' "$devcontainer_dir/setup-agents.sh"
-    ! grep -Eq '\bworktree-warden[[:space:]]+--version\b' "$devcontainer_dir/setup-agents.sh"
 }
 
 image_test() {
@@ -252,11 +354,24 @@ image_test() {
         test "$(command -v gh)" = /usr/local/bin/gh &&
         test -x /usr/local/bin/gh &&
         command -v claude >/dev/null &&
+        command -v codex >/dev/null &&
+        command -v bw >/dev/null &&
         command -v issue-orchestrator >/dev/null &&
         command -v worktree-warden >/dev/null &&
         test -x /opt/agent-devcontainer/gh-app-token.sh
     '
+    # Stage copies must preserve global package discovery, ownership and bin
+    # symlinks; both vendor entrypoints must still resolve their own modules.
+    docker run --rm "$image" bash -c '
+        npm list -g --depth=0 @nickysagan/issue-orchestrator @nickysagan/worktree-warden &&
+        for cli in issue-orchestrator worktree-warden; do
+            entry=$(readlink -f "$(command -v "$cli")")
+            test -x "$entry" && test "$(stat -c %U "$entry")" = root || exit 1
+        done
+    '
     docker run --rm "$image" bash -c 'node --check "$(command -v issue-orchestrator)"'
+    docker run --rm "$image" node --input-type=module -e \
+        'import("node:fs").then(fs => import(fs.realpathSync("/usr/bin/issue-orchestrator")))'
     docker run --rm "$image" bash -c 'node --check "$(command -v worktree-warden)"'
 
     # worktree-warden (issue #63): inert presence checks only — a plain
@@ -268,9 +383,9 @@ image_test() {
         test -x /opt/agent-devcontainer/worktree-warden-summary.sh
     '
     # `worktree-warden status` must run cleanly with no state dir present
-    # (fresh container, no prior candidates) — no GitHub App token, no
+    # (fresh repository, no prior candidates) — no GitHub App token, no
     # network, no daemon start.
-    [[ "$(docker run --rm "$image" bash -c 'worktree-warden status')" == *'worktree-warden status'* ]]
+    [[ "$(docker run --rm "$image" bash -c 'git init -q /tmp/warden-smoke && cd /tmp/warden-smoke && worktree-warden status')" == *'worktree-warden status'* ]]
 
     # Version identifier is baked and inspectable from inside the container (issue #24).
     docker run --rm "$image" bash -c 'test -r /opt/agent-devcontainer/VERSION'
@@ -296,7 +411,7 @@ image_test() {
     mkdir -p "$refresh_dir/.devcontainer"
     printf 'stale\n' >"$refresh_dir/.devcontainer/dc"
     printf 'stale\n' >"$refresh_dir/.devcontainer/devcontainer.json"
-    printf 'smoke-project\nSadotu\n4217970\ny\ny\n' | docker run --rm -i \
+    printf 'smoke-project\nSadotu\ny\ny\n' | docker run --rm -i \
         -v "$refresh_dir:/out" "$image" init >/dev/null
     test -x "$refresh_dir/.devcontainer/dc"
     grep -Fq 'sentinel-update)' "$refresh_dir/.devcontainer/dc"
@@ -305,6 +420,7 @@ const config = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8"));
 if (!config.runArgs.includes("--network=agent-services")) process.exit(1);
 if (config.containerEnv.SENTINEL_URL !== "http://usage-sentinel:4317") process.exit(1);
 if (config.postStartCommand !== "/opt/agent-devcontainer/start-worktree-warden.sh") process.exit(1);
+if (!config.mounts.includes("source=smoke-project-npm-cache,target=/home/vscode/.npm,type=volume")) process.exit(1);
 EOF
 
     container_id="$(docker run -d "$image" sleep 30)"

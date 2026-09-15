@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Re-resolves declared skills (dotagents) to their source's latest commit.
 # Baked into the image at /opt/agent-devcontainer/refresh-skills.sh and
-# called from BOTH setup-agents.sh (postCreate) and start-worktree-warden.sh
-# (postStart) — see issue #92: postCreate-only re-resolution left a container
-# serving stale skills for its whole lifetime between rebuilds.
+# called from setup-agents.sh (postCreate) and start-worktree-warden.sh
+# (postStart). Setup may request a one-shot handoff marker after successful
+# runtime materialization; postStart consumes it once so fresh creation does
+# not repeat the work, while every later restart still refreshes (#130).
 #
 # Contract mirrors start-worktree-warden.sh: no `set -e`, every not-ready
 # condition prints one line and exits 0 — this must never fail whichever
@@ -16,6 +17,7 @@ fi
 PROJECT_NAME="${PROJECT_NAME:-}"
 GH_OWNER="${GH_OWNER:-}"
 GITHUB_APP_DIR="${GITHUB_APP_DIR:-$HOME/.config/github-app}"
+REFRESH_SKILLS_HANDOFF="${REFRESH_SKILLS_HANDOFF:-}"
 
 # Resolve this script's own dir so TOOLDIR defaults correctly both baked into
 # the image (/opt/agent-devcontainer) and from a repo checkout (tests), same
@@ -60,6 +62,25 @@ ACTIVE_INSTALL_FILE="$git_common_dir/agents-lock-active-install"
 ACTIVE_INSTALL_PID=""
 ACTIVE_INSTALL_START=""
 ACTIVE_INSTALL_SUPERVISOR_PID=""
+
+# dotagents has its own supervised deadline below. These helpers cover only
+# the later Git/GitHub network boundaries that run outside that installer.
+STARTUP_NETWORK_TIMEOUT_SECS="${STARTUP_NETWORK_TIMEOUT_SECS:-120}"
+STARTUP_NETWORK_KILL_AFTER_SECS="${STARTUP_NETWORK_KILL_AFTER_SECS:-5}"
+run_unattended_network() {
+  timeout --kill-after="$STARTUP_NETWORK_KILL_AFTER_SECS" "$STARTUP_NETWORK_TIMEOUT_SECS" "$@"
+}
+
+# Token minting calls GitHub too, so keep it in the same bounded process group
+# as gh rather than expanding the token in this parent shell.
+run_unattended_gh() {
+  run_unattended_network bash -c '
+    tooldir="$1"
+    shift
+    token="$("$tooldir/gh-app-token.sh")" || exit $?
+    GH_TOKEN="$token" exec /usr/bin/gh "$@"
+  ' _ "$TOOLDIR" "$@"
+}
 
 proc_start_identity() {
   local stat rest
@@ -243,27 +264,39 @@ cleanup_refresh_state() {
 }
 
 materialize_runtime_skills() {
-  local status=0
+  local status=0 restore_status=0
   if ! save_primary_lock; then
     echo "WARNING: could not preserve agents.lock in the primary worktree — self-authored skills unavailable this run."
-    return 0
+    return 1
   fi
 
   install_dotagents "$WORKSPACE" || status=$?
-  restore_primary_lock || \
+  restore_primary_lock || {
+    restore_status=1
     echo "WARNING: could not restore agents.lock in the primary worktree — see /tmp/agents-lock-bump.log."
+  }
 
   if [ "$status" -eq 124 ]; then
     echo "WARNING: dotagents install timed out after ${timeout_secs}s — self-authored skills unavailable this run."
   elif [ "$status" -ne 0 ]; then
     echo "WARNING: dotagents install failed — self-authored skills unavailable this run."
   fi
+  [ "$status" -eq 0 ] && [ "$restore_status" -eq 0 ]
 }
 
 resolve_and_bump_agents_lock() {
-  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status
-  if ! git -C "$WORKSPACE" fetch -q origin main >/tmp/agents-lock-bump.log 2>&1; then
-    echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+  local bump_wt="$BUMP_WT" bump_pr_url="" existing_pr="" status gh_status
+  run_unattended_network git -C "$WORKSPACE" fetch -q origin main \
+    >/tmp/agents-lock-bump.log 2>&1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: fetching origin/main timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    elif [ "$status" -eq 137 ]; then
+      echo "WARNING: fetching origin/main was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — see /tmp/agents-lock-bump.log."
+    else
+      echo "WARNING: fetching origin/main failed during agents.lock refresh — see /tmp/agents-lock-bump.log."
+    fi
     return 0
   fi
 
@@ -295,22 +328,59 @@ resolve_and_bump_agents_lock() {
   # Commit the detached resolution and publish it directly to the one fixed
   # remote branch. No local bump branch exists, so interrupted old worktrees
   # cannot pin that branch or influence the generated lock.
-  if git -C "$bump_wt" add agents.lock && \
-     git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
+  if ! git -C "$bump_wt" add agents.lock || \
+     ! git -C "$bump_wt" -c user.name="agent-devcontainer setup" \
        -c user.email="agent-devcontainer-setup@users.noreply.github.com" \
-       commit -qm "chore: bump agents.lock skill pins (auto, dc up)" && \
-     git -C "$bump_wt" push -qf origin "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1; then
-    existing_pr="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr list \
-      --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
-      --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)" || existing_pr=""
-    if [ -n "$existing_pr" ]; then
-      bump_pr_url="$existing_pr"
+       commit -qm "chore: bump agents.lock skill pins (auto, dc up)"; then
+    echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    return 0
+  fi
+
+  run_unattended_network git -C "$bump_wt" push -qf origin \
+    "HEAD:refs/heads/$BUMP_BRANCH" >>/tmp/agents-lock-bump.log 2>&1
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 124 ]; then
+      echo "WARNING: agents.lock push timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+    elif [ "$status" -eq 137 ]; then
+      echo "WARNING: agents.lock push was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
     else
-      bump_pr_url="$(GH_TOKEN="$("$TOOLDIR/gh-app-token.sh")" /usr/bin/gh pr create \
-        --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$BUMP_BRANCH" \
-        --title "chore: bump agents.lock skill pins" \
-        --body "Automated \`agents.lock\` pin bump — skills re-resolved to their source's latest commit. Review the diff before merging." \
-        2>>/tmp/agents-lock-bump.log)" || bump_pr_url=""
+      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    fi
+    return 0
+  fi
+
+  existing_pr="$(run_unattended_gh pr list \
+    --repo "$GH_OWNER/$PROJECT_NAME" --head "$BUMP_BRANCH" --state open \
+    --json url --jq '.[0].url' 2>>/tmp/agents-lock-bump.log)"
+  gh_status=$?
+  if [ "$gh_status" -ne 0 ]; then
+    if [ "$gh_status" -eq 124 ]; then
+      echo "WARNING: agents.lock PR lookup timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+    elif [ "$gh_status" -eq 137 ]; then
+      echo "WARNING: agents.lock PR lookup was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
+    else
+      echo "WARNING: agents.lock changed but the auto-PR failed — see /tmp/agents-lock-bump.log."
+    fi
+    return 0
+  fi
+  if [ -n "$existing_pr" ]; then
+    bump_pr_url="$existing_pr"
+  else
+    bump_pr_url="$(run_unattended_gh pr create \
+      --repo "$GH_OWNER/$PROJECT_NAME" --base main --head "$BUMP_BRANCH" \
+      --title "chore: bump agents.lock skill pins" \
+      --body "Automated \`agents.lock\` pin bump — skills re-resolved to their source's latest commit. Review the diff before merging." \
+      2>>/tmp/agents-lock-bump.log)"
+    gh_status=$?
+    if [ "$gh_status" -eq 124 ]; then
+      echo "WARNING: agents.lock PR creation timed out after ${STARTUP_NETWORK_TIMEOUT_SECS}s — next startup will retry; see /tmp/agents-lock-bump.log."
+      return 0
+    elif [ "$gh_status" -eq 137 ]; then
+      echo "WARNING: agents.lock PR creation was force-killed or exceeded the ${STARTUP_NETWORK_TIMEOUT_SECS}s network deadline — next startup will retry; see /tmp/agents-lock-bump.log."
+      return 0
+    elif [ "$gh_status" -ne 0 ]; then
+      bump_pr_url=""
     fi
   fi
   if [ -n "$bump_pr_url" ]; then
@@ -322,6 +392,7 @@ resolve_and_bump_agents_lock() {
 
 refresh_agents_lock() {
   (
+    materialized=0
     flock -w 300 200 || {
       echo "WARNING: a concurrent refresh held the agents.lock refresh lock too long — see /tmp/agents-lock-bump.log."
       exit 0
@@ -334,8 +405,12 @@ refresh_agents_lock() {
       exit 0
     fi
     cleanup_resolution_worktree
-    materialize_runtime_skills
+    materialize_runtime_skills && materialized=1
     resolve_and_bump_agents_lock
+    if [ "$materialized" -eq 1 ] && [ -n "$REFRESH_SKILLS_HANDOFF" ]; then
+      mkdir -p "$REFRESH_SKILLS_HANDOFF" || \
+        echo "WARNING: could not publish successful skill-refresh handoff."
+    fi
   ) 200>"$BUMP_FLOCK"
 }
 
@@ -343,5 +418,16 @@ echo "==> Self-authored skills (dotagents)"
 # Bounded so a hung download can never wedge container start (postStart) or
 # postCreate. REFRESH_SKILLS_TIMEOUT overrides the 120s default for tests.
 timeout_secs="${REFRESH_SKILLS_TIMEOUT:-120}"
-refresh_agents_lock
+if [ "${REFRESH_SKILLS_REPORT_WARNINGS:-}" = 1 ]; then
+  refresh_output="$(mktemp)"
+  trap 'rm -f "$refresh_output"' EXIT
+  refresh_agents_lock 2>&1 | tee "$refresh_output"
+  refresh_status=( "${PIPESTATUS[@]}" )
+  if [ "${refresh_status[0]}" -ne 0 ] || [ "${refresh_status[1]}" -ne 0 ] || \
+      grep -q '^WARNING:' "$refresh_output"; then
+    exit 10
+  fi
+else
+  refresh_agents_lock
+fi
 exit 0

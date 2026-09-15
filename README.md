@@ -37,7 +37,7 @@ container run `codex login --device-auth`, exit, then on the host run `./.devcon
 ## Daily use
 
 ```bash
-./.devcontainer/dc up      # pulls image, recreates container from a clean build
+./.devcontainer/dc up      # pulls image, reuses build cache, recreates container
 ./.devcontainer/dc shell
 start work
 ```
